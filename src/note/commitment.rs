@@ -30,6 +30,12 @@ impl NoteCommitTrapdoor {
     pub(crate) fn inner(&self) -> pallas::Scalar {
         self.0
     }
+
+    /// Wraps a caller-supplied scalar as a commitment trapdoor (ZcashName).
+    #[cfg(feature = "zns")]
+    pub(crate) fn from_inner(inner: pallas::Scalar) -> Self {
+        NoteCommitTrapdoor(inner)
+    }
 }
 
 /// A commitment to a note.

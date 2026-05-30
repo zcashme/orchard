@@ -335,6 +335,8 @@ pub struct OutputInfo {
     recipient: Address,
     value: NoteValue,
     memo: [u8; 512],
+    #[cfg(feature = "zns")]
+    zns_override: Option<crate::note::NoteConstructionOverride>,
 }
 
 impl OutputInfo {
@@ -350,6 +352,28 @@ impl OutputInfo {
             recipient,
             value,
             memo,
+            #[cfg(feature = "zns")]
+            zns_override: None,
+        }
+    }
+
+    /// Constructs an `OutputInfo` for a ZcashName Name Note, whose `(rcm, ψ)`
+    /// are supplied directly rather than derived from a `RandomSeed`.
+    #[cfg(feature = "zns")]
+    pub fn new_zns(
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        memo: [u8; 512],
+        rcm: pasta_curves::pallas::Scalar,
+        psi: pasta_curves::pallas::Base,
+    ) -> Self {
+        Self {
+            ovk,
+            recipient,
+            value,
+            memo,
+            zns_override: Some(crate::note::NoteConstructionOverride { rcm, psi }),
         }
     }
 
@@ -375,6 +399,15 @@ impl OutputInfo {
         mut rng: impl RngCore,
     ) -> (Note, ExtractedNoteCommitment, TransmittedNoteCiphertext) {
         let rho = Rho::from_nf_old(nf_old);
+        #[cfg(feature = "zns")]
+        let note = match self.zns_override {
+            Some(override_) => {
+                Note::new_with_override(self.recipient, self.value, rho, override_, &mut rng)
+                    .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment")
+            }
+            None => Note::new(self.recipient, self.value, rho, &mut rng),
+        };
+        #[cfg(not(feature = "zns"))]
         let note = Note::new(self.recipient, self.value, rho, &mut rng);
         let cm_new = note.commitment();
         let cmx = cm_new.into();
@@ -675,6 +708,30 @@ impl Builder {
 
         self.outputs
             .push(OutputInfo::new(ovk, recipient, value, memo));
+
+        Ok(())
+    }
+
+    /// Adds a ZcashName Name Note output, whose `(rcm, ψ)` are supplied directly
+    /// (typically `BLAKE2b("ZcashName/v1" || …)` computed by the Registry) rather
+    /// than derived from a `RandomSeed`. Usually a self-send of value `0`.
+    #[cfg(feature = "zns")]
+    pub fn add_zns_output(
+        &mut self,
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        memo: [u8; 512],
+        rcm: pasta_curves::pallas::Scalar,
+        psi: pasta_curves::pallas::Base,
+    ) -> Result<(), OutputError> {
+        let flags = self.bundle_type.flags();
+        if !flags.outputs_enabled() {
+            return Err(OutputError::OutputsDisabled);
+        }
+
+        self.outputs
+            .push(OutputInfo::new_zns(ovk, recipient, value, memo, rcm, psi));
 
         Ok(())
     }
