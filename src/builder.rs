@@ -234,6 +234,11 @@ pub struct SpendInfo {
     pub(crate) scope: Scope,
     pub(crate) note: Note,
     pub(crate) merkle_path: MerklePath,
+    /// Caller-supplied `(rcm, ψ)` for spending a ZNS Name Note. The `note`
+    /// stays a normal ZIP 212 `Note`; the override is patched into the
+    /// nullifier and circuit witnesses at build time.
+    #[cfg(feature = "zns")]
+    pub(crate) zns_override: Option<crate::note::NoteConstructionOverride>,
 }
 
 impl SpendInfo {
@@ -254,6 +259,8 @@ impl SpendInfo {
             scope,
             note,
             merkle_path,
+            #[cfg(feature = "zns")]
+            zns_override: None,
         })
     }
 
@@ -272,6 +279,8 @@ impl SpendInfo {
             scope: Scope::External,
             note,
             merkle_path,
+            #[cfg(feature = "zns")]
+            zns_override: None,
         }
     }
 
@@ -299,6 +308,19 @@ impl SpendInfo {
         pallas::Scalar,
         redpallas::VerificationKey<SpendAuth>,
     ) {
+        #[cfg(feature = "zns")]
+        let nf_old = match &self.zns_override {
+            Some(ov) => ov
+                .nullifier(
+                    &self.fvk,
+                    self.note.recipient(),
+                    self.note.value(),
+                    self.note.rho(),
+                )
+                .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment"),
+            None => self.note.nullifier(&self.fvk),
+        };
+        #[cfg(not(feature = "zns"))]
         let nf_old = self.note.nullifier(&self.fvk);
         let ak: SpendValidatingKey = self.fvk.clone().into();
         let alpha = pallas::Scalar::random(&mut rng);
@@ -399,16 +421,18 @@ impl OutputInfo {
         mut rng: impl RngCore,
     ) -> (Note, ExtractedNoteCommitment, TransmittedNoteCiphertext) {
         let rho = Rho::from_nf_old(nf_old);
+        // A standard ZIP 212 note always backs encryption (esk/epk/plaintext).
+        // For a ZNS output the on-chain commitment instead opens to the
+        // caller-supplied (rcm, ψ); `Note` itself never carries those values.
+        let note = Note::new(self.recipient, self.value, rho, &mut rng);
         #[cfg(feature = "zns")]
-        let note = match self.zns_override {
-            Some(override_) => {
-                Note::new_with_override(self.recipient, self.value, rho, override_, &mut rng)
-                    .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment")
-            }
-            None => Note::new(self.recipient, self.value, rho, &mut rng),
+        let cm_new = match &self.zns_override {
+            Some(ov) => ov
+                .commitment(self.recipient, self.value, rho)
+                .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment"),
+            None => note.commitment(),
         };
         #[cfg(not(feature = "zns"))]
-        let note = Note::new(self.recipient, self.value, rho, &mut rng);
         let cm_new = note.commitment();
         let cmx = cm_new.into();
 
@@ -496,30 +520,56 @@ impl ActionInfo {
         let (nf_old, ak, alpha, rk) = self.spend.build(&mut rng);
         let (note, cmx, encrypted_note) = self.output.build(&cv_net, nf_old, &mut rng);
 
-        (
-            Action::from_parts(
-                nf_old,
-                rk,
-                cmx,
-                encrypted_note,
-                cv_net,
-                SigningMetadata {
-                    dummy_ask: self.spend.dummy_sk.as_ref().map(SpendAuthorizingKey::from),
-                    parts: SigningParts { ak, alpha },
-                },
-            )
-            .expect(
-                "rk is non-identity (α was generated randomly) and epk is a \
-                 valid non-identity point by construction",
-            ),
-            Circuit::from_action_context_unchecked(
-                self.spend,
-                note,
-                alpha,
-                self.rcv,
-                circuit_version,
-            ),
+        let action = Action::from_parts(
+            nf_old,
+            rk,
+            cmx,
+            encrypted_note,
+            cv_net,
+            SigningMetadata {
+                dummy_ask: self.spend.dummy_sk.as_ref().map(SpendAuthorizingKey::from),
+                parts: SigningParts { ak, alpha },
+            },
         )
+        .expect("α was generated randomly, so an identity rk is vanishingly unlikely");
+
+        // Capture any ZNS overrides before `self.spend` is moved into the
+        // circuit, then patch the circuit witnesses directly so `Note` never
+        // carries (rcm, ψ).
+        #[cfg(feature = "zns")]
+        let spend_override = self.spend.zns_override.map(|ov| {
+            (
+                ov,
+                self.spend.note.recipient(),
+                self.spend.note.value(),
+                self.spend.note.rho(),
+            )
+        });
+        #[cfg(feature = "zns")]
+        let output_override = self.output.zns_override;
+
+        #[allow(unused_mut)]
+        let mut circuit =
+            Circuit::from_action_context_unchecked(self.spend, note, alpha, self.rcv, circuit_version);
+
+        #[cfg(feature = "zns")]
+        {
+            use crate::note::commitment::NoteCommitTrapdoor;
+            use halo2_proofs::circuit::Value;
+            if let Some((ov, recipient, value, rho)) = spend_override {
+                circuit.psi_old = Value::known(ov.psi);
+                circuit.rcm_old = Value::known(NoteCommitTrapdoor::from_inner(ov.rcm));
+                circuit.cm_old = Value::known(ov.commitment(recipient, value, rho).expect(
+                    "ZcashName override (rcm, ψ) failed to produce a valid commitment",
+                ));
+            }
+            if let Some(ov) = output_override {
+                circuit.psi_new = Value::known(ov.psi);
+                circuit.rcm_new = Value::known(NoteCommitTrapdoor::from_inner(ov.rcm));
+            }
+        }
+
+        (action, circuit)
     }
 
     fn build_for_pczt(self, mut rng: impl RngCore) -> crate::pczt::Action {
@@ -682,6 +732,38 @@ impl Builder {
         }
 
         let spend = SpendInfo::new(fvk, note, merkle_path).ok_or(SpendError::FvkMismatch)?;
+
+        // Consistency check: all anchors must be equal.
+        if !spend.has_matching_anchor(&self.anchor) {
+            return Err(SpendError::AnchorMismatch);
+        }
+
+        self.spends.push(spend);
+
+        Ok(())
+    }
+
+    /// Adds a ZcashName Name Note to be spent, whose `(rcm, ψ)` are supplied
+    /// directly rather than derived from a `RandomSeed`. `note` must be a normal
+    /// ZIP 212 `Note` carrying the Name Note's recipient/value/ρ (its `rseed`
+    /// is irrelevant — the override supplies `(rcm, ψ)`). Name Notes are
+    /// value-0, so the anchor check is trivially satisfied.
+    #[cfg(feature = "zns")]
+    pub fn add_zns_spend(
+        &mut self,
+        fvk: FullViewingKey,
+        note: Note,
+        merkle_path: MerklePath,
+        rcm: pasta_curves::pallas::Scalar,
+        psi: pasta_curves::pallas::Base,
+    ) -> Result<(), SpendError> {
+        let flags = self.bundle_type.flags();
+        if !flags.spends_enabled() {
+            return Err(SpendError::SpendsDisabled);
+        }
+
+        let mut spend = SpendInfo::new(fvk, note, merkle_path).ok_or(SpendError::FvkMismatch)?;
+        spend.zns_override = Some(crate::note::NoteConstructionOverride { rcm, psi });
 
         // Consistency check: all anchors must be equal.
         if !spend.has_matching_anchor(&self.anchor) {

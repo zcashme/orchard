@@ -150,6 +150,43 @@ pub struct NoteConstructionOverride {
     pub psi: pallas::Base,
 }
 
+#[cfg(feature = "zns")]
+impl NoteConstructionOverride {
+    /// Derives the note commitment for a note built with these overridden
+    /// `(rcm, ψ)`, without storing them on the `Note` type. Returns `None`
+    /// if the inputs do not open to a valid commitment (same precondition
+    /// as [`Note::from_parts`]).
+    pub(crate) fn commitment(
+        &self,
+        recipient: Address,
+        value: NoteValue,
+        rho: Rho,
+    ) -> CtOption<NoteCommitment> {
+        NoteCommitment::derive(
+            recipient.g_d().to_bytes(),
+            recipient.pk_d().to_bytes(),
+            value,
+            rho.into_inner(),
+            self.psi,
+            commitment::NoteCommitTrapdoor::from_inner(self.rcm),
+        )
+    }
+
+    /// Derives the nullifier for a note built with these overridden `(rcm, ψ)`.
+    /// Mirrors [`Note::nullifier`] but reads `ψ` from the override. Returns
+    /// `None` if the override does not open to a valid commitment.
+    pub(crate) fn nullifier(
+        &self,
+        fvk: &FullViewingKey,
+        recipient: Address,
+        value: NoteValue,
+        rho: Rho,
+    ) -> Option<Nullifier> {
+        let cm: Option<NoteCommitment> = self.commitment(recipient, value, rho).into();
+        cm.map(|cm| Nullifier::derive(fvk.nk(), rho.into_inner(), self.psi, cm))
+    }
+}
+
 /// A discrete amount of funds received by an address.
 #[derive(Debug, Copy, Clone)]
 pub struct Note {
@@ -166,10 +203,6 @@ pub struct Note {
     rho: Rho,
     /// The seed randomness for various note components.
     rseed: RandomSeed,
-    /// Caller-supplied `(rcm, ψ)` override (ZcashName Name Notes). When `None`,
-    /// `(rcm, ψ)` are derived from `rseed` per ZIP 212.
-    #[cfg(feature = "zns")]
-    override_: Option<NoteConstructionOverride>,
 }
 
 impl PartialEq for Note {
@@ -208,33 +241,6 @@ impl Note {
             value,
             rho,
             rseed,
-            #[cfg(feature = "zns")]
-            override_: None,
-        };
-        CtOption::new(note, note.commitment_inner().is_some())
-    }
-
-    /// Constructs a `Note` whose `(rcm, ψ)` are supplied by `override_` rather
-    /// than derived from `rseed` per ZIP 212. A random `rseed` is still
-    /// generated so that `esk`/`epk` behave identically to a normal note.
-    ///
-    /// Returns `None` if the supplied `(rcm, ψ)` do not produce a valid note
-    /// commitment — the same precondition as [`Note::from_parts`].
-    #[cfg(feature = "zns")]
-    pub fn new_with_override(
-        recipient: Address,
-        value: NoteValue,
-        rho: Rho,
-        override_: NoteConstructionOverride,
-        mut rng: impl RngCore,
-    ) -> CtOption<Self> {
-        let rseed = RandomSeed::random(&mut rng, &rho);
-        let note = Note {
-            recipient,
-            value,
-            rho,
-            rseed,
-            override_: Some(override_),
         };
         CtOption::new(note, note.commitment_inner().is_some())
     }
@@ -308,30 +314,6 @@ impl Note {
         self.rho
     }
 
-    /// Returns the Sinsemilla randomizer `ψ`: the caller-supplied override if
-    /// present, otherwise the ZIP 212 derivation from `rseed`.
-    pub(crate) fn psi(&self) -> pallas::Base {
-        #[cfg(feature = "zns")]
-        {
-            if let Some(ov) = &self.override_ {
-                return ov.psi;
-            }
-        }
-        self.rseed.psi(&self.rho)
-    }
-
-    /// Returns the note commitment trapdoor `rcm`: the caller-supplied override
-    /// if present, otherwise the ZIP 212 derivation from `rseed`.
-    pub(crate) fn rcm(&self) -> commitment::NoteCommitTrapdoor {
-        #[cfg(feature = "zns")]
-        {
-            if let Some(ov) = &self.override_ {
-                return commitment::NoteCommitTrapdoor::from_inner(ov.rcm);
-            }
-        }
-        self.rseed.rcm(&self.rho)
-    }
-
     /// Derives the commitment to this note.
     ///
     /// Defined in [Zcash Protocol Spec § 3.2: Notes][notes].
@@ -359,8 +341,8 @@ impl Note {
             self.recipient.pk_d().to_bytes(),
             self.value,
             self.rho.0,
-            self.psi(),
-            self.rcm(),
+            self.rseed.psi(&self.rho),
+            self.rseed.rcm(&self.rho),
         )
     }
 
@@ -369,7 +351,7 @@ impl Note {
         Nullifier::derive(
             fvk.nk(),
             self.rho.0,
-            self.psi(),
+            self.rseed.psi(&self.rho),
             self.commitment(),
         )
     }
@@ -428,8 +410,6 @@ pub mod testing {
                 value,
                 rho,
                 rseed,
-                #[cfg(feature = "zns")]
-                override_: None,
             }
         }
     }
