@@ -1614,4 +1614,91 @@ mod tests {
         // verification proves the prover bound a non-ZIP-212 (rcm, ψ).
         bundle.verify_proof(&vk).unwrap();
     }
+
+    /// A ZcashName UPDATE: spend a prior (value-0) Name Note and mint the next
+    /// one in the chain, both with caller-supplied `(rcm, ψ)`. Exercises the
+    /// spend-side override — `nf_old` and the in-circuit `cm_old`/`psi_old`/
+    /// `rcm_old` all come from `SpendInfo::opening()`, which no other test hits.
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn zns_spend_bundle_verifies() {
+        use group::ff::Field;
+        use pasta_curves::pallas;
+
+        use crate::{
+            circuit::VerifyingKey,
+            keys::SpendAuthorizingKey,
+            note::{Note, Nullifier, Rho},
+            tree::MerklePath,
+        };
+
+        let pk = ProvingKey::build();
+        let vk = VerifyingKey::build();
+        let mut rng = OsRng;
+
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let addr_reg = fvk.address_at(0u32, Scope::External);
+
+        // A prior Name Note (value-0 self-send to addr_reg) to spend. Its rho is
+        // fixed at mint time; the rseed here is the decoy plaintext seed and does
+        // not derive the spend's (rcm, ψ).
+        let old_note = Note::new(
+            addr_reg,
+            NoteValue::zero(),
+            Rho::from_nf_old(Nullifier::dummy(&mut rng)),
+            &mut rng,
+        );
+
+        // Stand-ins for zns_rcm/zns_psi: the old note's opening and the next
+        // link in the chain. Any valid field elements exercise the override path.
+        let rcm_old = pallas::Scalar::random(&mut rng);
+        let psi_old = pallas::Base::random(&mut rng);
+        let rcm_new = pallas::Scalar::random(&mut rng);
+        let psi_new = pallas::Base::random(&mut rng);
+
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        );
+
+        // Value-0 spends skip the in-circuit Merkle-root check (the constraint is
+        // `v_old = 0 OR root = anchor`), so a dummy path suffices — no real tree.
+        builder
+            .add_zns_spend(fvk, old_note, MerklePath::dummy(&mut rng), rcm_old, psi_old)
+            .unwrap();
+        builder
+            .add_zns_output(
+                None,
+                addr_reg,
+                NoteValue::zero(),
+                [0u8; 512],
+                rcm_new,
+                psi_new,
+            )
+            .unwrap();
+
+        let balance: i64 = builder.value_balance().unwrap();
+        assert_eq!(balance, 0);
+
+        // Unlike the output-only test, the spend is real (not a dummy), so it
+        // needs a spend-auth signature before finalizing.
+        let ask = SpendAuthorizingKey::from(&sk);
+        let bundle: Bundle<Authorized, i64> = builder
+            .build(&mut rng)
+            .unwrap()
+            .unwrap()
+            .0
+            .create_proof(&pk, &mut rng)
+            .unwrap()
+            .prepare(rng, [0; 32])
+            .sign(&mut rng, &ask)
+            .finalize()
+            .unwrap();
+        assert_eq!(bundle.value_balance(), &0);
+
+        // verify_proof checks the proof against public instances carrying the
+        // overridden nf_old (from the spend opening) and the overridden cmx.
+        bundle.verify_proof(&vk).unwrap();
+    }
 }
