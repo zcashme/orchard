@@ -306,19 +306,20 @@ impl Note {
     }
 }
 
-/// A note commitment opening used by the builder and prover.
+/// A note commitment opening used by the builder and prover, on both the spend
+/// (input) and output sides of an action.
 ///
-/// ZIP 212 notes derive `rcm` and `psi` from `rseed`; ZcashName outputs use a
+/// ZIP 212 notes derive `rcm` and `psi` from `rseed`; ZcashName Name Notes use a
 /// caller-supplied opening while keeping `Note` itself ZIP 212-specific.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct OutputNote {
+pub(crate) struct NoteOpening {
     note: Note,
     psi: pallas::Base,
     rcm: commitment::NoteCommitTrapdoor,
 }
 
-impl OutputNote {
-    /// Constructs an output note opening from a standard ZIP 212 note.
+impl NoteOpening {
+    /// Constructs a note opening from a standard ZIP 212 note.
     pub(crate) fn from_note(note: Note) -> Self {
         let rho = note.rho();
         Self {
@@ -328,15 +329,15 @@ impl OutputNote {
         }
     }
 
-    /// Constructs an output note opening from caller-supplied `rcm` and `psi`.
+    /// Constructs a note opening from caller-supplied `rcm` and `psi`.
     #[cfg(feature = "unsafe-zns")]
     pub(crate) fn from_parts(
         note: Note,
         rcm: commitment::NoteCommitTrapdoor,
         psi: pallas::Base,
     ) -> CtOption<Self> {
-        let output_note = Self { note, psi, rcm };
-        CtOption::new(output_note, output_note.commitment_inner().is_some())
+        let opening = Self { note, psi, rcm };
+        CtOption::new(opening, opening.commitment_inner().is_some())
     }
 
     /// Returns the ZIP 212 note used for plaintext encryption.

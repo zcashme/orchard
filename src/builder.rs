@@ -16,7 +16,7 @@ use crate::{
         FullViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey, SpendValidatingKey,
         SpendingKey,
     },
-    note::{ExtractedNoteCommitment, Note, Nullifier, OutputNote, Rho, TransmittedNoteCiphertext},
+    note::{ExtractedNoteCommitment, Note, NoteOpening, Nullifier, Rho, TransmittedNoteCiphertext},
     note_encryption::OrchardNoteEncryption,
     primitives::redpallas::{self, Binding, SpendAuth},
     tree::{Anchor, MerklePath},
@@ -236,7 +236,7 @@ pub struct SpendInfo {
     pub(crate) merkle_path: MerklePath,
     /// Caller-supplied `(rcm, ψ)` for spending a ZNS Name Note. The `note`
     /// stays a normal ZIP 212 `Note`; these values are never stored on it —
-    /// they feed an `OutputNote` opening and the circuit witnesses at build time.
+    /// they feed a `NoteOpening` and the circuit witnesses at build time.
     #[cfg(feature = "unsafe-zns")]
     pub(crate) zns_override: Option<(pallas::Scalar, pallas::Base)>,
 }
@@ -284,6 +284,21 @@ impl SpendInfo {
         }
     }
 
+    /// The commitment opening used to spend this note: ZIP 212-derived from the
+    /// note, or the caller-supplied ZNS opening when an override is set.
+    pub(crate) fn opening(&self) -> NoteOpening {
+        #[cfg(feature = "unsafe-zns")]
+        if let Some((rcm, psi)) = self.zns_override {
+            return NoteOpening::from_parts(
+                self.note,
+                crate::note::commitment::NoteCommitTrapdoor::from_inner(rcm),
+                psi,
+            )
+            .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment");
+        }
+        NoteOpening::from_note(self.note)
+    }
+
     fn has_matching_anchor(&self, anchor: &Anchor) -> bool {
         if self.note.value() == NoteValue::ZERO {
             true
@@ -308,19 +323,7 @@ impl SpendInfo {
         pallas::Scalar,
         redpallas::VerificationKey<SpendAuth>,
     ) {
-        #[cfg(feature = "unsafe-zns")]
-        let nf_old = match self.zns_override {
-            Some((rcm, psi)) => OutputNote::from_parts(
-                self.note,
-                crate::note::commitment::NoteCommitTrapdoor::from_inner(rcm),
-                psi,
-            )
-            .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment")
-            .nullifier(&self.fvk),
-            None => self.note.nullifier(&self.fvk),
-        };
-        #[cfg(not(feature = "unsafe-zns"))]
-        let nf_old = self.note.nullifier(&self.fvk);
+        let nf_old = self.opening().nullifier(&self.fvk);
         let ak: SpendValidatingKey = self.fvk.clone().into();
         let alpha = pallas::Scalar::random(&mut rng);
         let rk = ak.randomize(&alpha);
@@ -419,7 +422,7 @@ impl OutputInfo {
         nf_old: Nullifier,
         mut rng: impl RngCore,
     ) -> (
-        OutputNote,
+        NoteOpening,
         ExtractedNoteCommitment,
         TransmittedNoteCiphertext,
     ) {
@@ -428,16 +431,16 @@ impl OutputInfo {
 
         #[cfg(feature = "unsafe-zns")]
         let output_note = match self.zns_override {
-            Some((rcm, psi)) => OutputNote::from_parts(
+            Some((rcm, psi)) => NoteOpening::from_parts(
                 note,
                 crate::note::commitment::NoteCommitTrapdoor::from_inner(rcm),
                 psi,
             )
             .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment"),
-            None => OutputNote::from_note(note),
+            None => NoteOpening::from_note(note),
         };
         #[cfg(not(feature = "unsafe-zns"))]
-        let output_note = OutputNote::from_note(note);
+        let output_note = NoteOpening::from_note(note);
 
         let cm_new = output_note.commitment();
         let cmx = cm_new.into();
@@ -539,33 +542,16 @@ impl ActionInfo {
         )
         .expect("α was generated randomly, so an identity rk is vanishingly unlikely");
 
-        // Capture the ZNS witness values before `self.spend` is moved into the
-        // circuit, computing the spend commitment from the note while we still
-        // hold it. `Note` never carries (rcm, ψ); they live only here.
-        #[cfg(feature = "unsafe-zns")]
-        let spend_override = self.spend.zns_override.map(|(rcm, psi)| {
-            let cm_old = OutputNote::from_parts(
-                self.spend.note,
-                crate::note::commitment::NoteCommitTrapdoor::from_inner(rcm),
-                psi,
-            )
-                .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment");
-            (cm_old.rcm(), cm_old.psi(), cm_old.commitment())
-        });
-
-        #[allow(unused_mut)]
-        let mut circuit =
-            Circuit::from_action_context_unchecked(self.spend, output_note, alpha, self.rcv, circuit_version);
-
-        #[cfg(feature = "unsafe-zns")]
-        {
-            use halo2_proofs::circuit::Value;
-            if let Some((rcm, psi, cm_old)) = spend_override {
-                circuit.psi_old = Value::known(psi);
-                circuit.rcm_old = Value::known(rcm);
-                circuit.cm_old = Value::known(cm_old);
-            }
-        }
+        // The circuit derives spend witnesses from `spend.opening()`, so a ZNS
+        // override flows in through the same path as the output side — no
+        // post-construction patching of `psi_old`/`rcm_old`/`cm_old`.
+        let circuit = Circuit::from_action_context_unchecked(
+            self.spend,
+            output_note,
+            alpha,
+            self.rcv,
+            circuit_version,
+        );
 
         (action, circuit)
     }

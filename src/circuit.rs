@@ -35,7 +35,7 @@ use crate::{
     note::{
         commitment::{NoteCommitTrapdoor, NoteCommitment},
         nullifier::Nullifier,
-        ExtractedNoteCommitment, Note, OutputNote, Rho,
+        ExtractedNoteCommitment, Note, NoteOpening, Rho,
     },
     primitives::redpallas::{SpendAuth, VerificationKey},
     spec::NonIdentityPallasPoint,
@@ -217,7 +217,7 @@ impl Circuit {
         (Rho::from_nf_old(spend.note.nullifier(&spend.fvk)) == output_note.rho()).then(|| {
             Self::from_action_context_unchecked(
                 spend,
-                OutputNote::from_note(output_note),
+                NoteOpening::from_note(output_note),
                 alpha,
                 rcv,
                 circuit_version,
@@ -227,15 +227,19 @@ impl Circuit {
 
     pub(crate) fn from_action_context_unchecked(
         spend: SpendInfo,
-        output_note: OutputNote,
+        output_note: NoteOpening,
         alpha: pallas::Scalar,
         rcv: ValueCommitTrapdoor,
         circuit_version: OrchardCircuitVersion,
     ) -> Circuit {
         let sender_address = spend.note.recipient();
-        let rho_old = spend.note.rho();
-        let psi_old = spend.note.rseed().psi(&rho_old);
-        let rcm_old = spend.note.rseed().rcm(&rho_old);
+
+        // The spend witnesses come from the input note's opening: ZIP 212-derived
+        // for a standard note, or the caller-supplied ZNS opening for a Name Note.
+        let spend_opening = spend.opening();
+        let rho_old = spend_opening.rho();
+        let psi_old = spend_opening.psi();
+        let rcm_old = spend_opening.rcm();
 
         let psi_new = output_note.psi();
         let rcm_new = output_note.rcm();
@@ -249,7 +253,7 @@ impl Circuit {
             rho_old: Value::known(rho_old),
             psi_old: Value::known(psi_old),
             rcm_old: Value::known(rcm_old),
-            cm_old: Value::known(spend.note.commitment()),
+            cm_old: Value::known(spend_opening.commitment()),
             alpha: Value::known(alpha),
             ak: Value::known(spend.fvk.clone().into()),
             nk: Value::known(*spend.fvk.nk()),
