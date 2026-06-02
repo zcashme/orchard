@@ -235,10 +235,10 @@ pub struct SpendInfo {
     pub(crate) note: Note,
     pub(crate) merkle_path: MerklePath,
     /// Caller-supplied `(rcm, ψ)` for spending a ZNS Name Note. The `note`
-    /// stays a normal ZIP 212 `Note`; the override is patched into the
-    /// nullifier and circuit witnesses at build time.
-    #[cfg(feature = "zns")]
-    pub(crate) zns_override: Option<crate::note::NoteConstructionOverride>,
+    /// stays a normal ZIP 212 `Note`; these values are never stored on it —
+    /// they feed `Note::nullifier_with` and the circuit witnesses at build time.
+    #[cfg(feature = "unsafe-zns")]
+    pub(crate) zns_override: Option<(pallas::Scalar, pallas::Base)>,
 }
 
 impl SpendInfo {
@@ -259,7 +259,7 @@ impl SpendInfo {
             scope,
             note,
             merkle_path,
-            #[cfg(feature = "zns")]
+            #[cfg(feature = "unsafe-zns")]
             zns_override: None,
         })
     }
@@ -279,7 +279,7 @@ impl SpendInfo {
             scope: Scope::External,
             note,
             merkle_path,
-            #[cfg(feature = "zns")]
+            #[cfg(feature = "unsafe-zns")]
             zns_override: None,
         }
     }
@@ -308,19 +308,19 @@ impl SpendInfo {
         pallas::Scalar,
         redpallas::VerificationKey<SpendAuth>,
     ) {
-        #[cfg(feature = "zns")]
-        let nf_old = match &self.zns_override {
-            Some(ov) => ov
-                .nullifier(
+        #[cfg(feature = "unsafe-zns")]
+        let nf_old = match self.zns_override {
+            Some((rcm, psi)) => self
+                .note
+                .nullifier_with(
                     &self.fvk,
-                    self.note.recipient(),
-                    self.note.value(),
-                    self.note.rho(),
+                    crate::note::commitment::NoteCommitTrapdoor::from_inner(rcm),
+                    psi,
                 )
                 .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment"),
             None => self.note.nullifier(&self.fvk),
         };
-        #[cfg(not(feature = "zns"))]
+        #[cfg(not(feature = "unsafe-zns"))]
         let nf_old = self.note.nullifier(&self.fvk);
         let ak: SpendValidatingKey = self.fvk.clone().into();
         let alpha = pallas::Scalar::random(&mut rng);
@@ -357,8 +357,8 @@ pub struct OutputInfo {
     recipient: Address,
     value: NoteValue,
     memo: [u8; 512],
-    #[cfg(feature = "zns")]
-    zns_override: Option<crate::note::NoteConstructionOverride>,
+    #[cfg(feature = "unsafe-zns")]
+    zns_override: Option<(pallas::Scalar, pallas::Base)>,
 }
 
 impl OutputInfo {
@@ -374,14 +374,14 @@ impl OutputInfo {
             recipient,
             value,
             memo,
-            #[cfg(feature = "zns")]
+            #[cfg(feature = "unsafe-zns")]
             zns_override: None,
         }
     }
 
     /// Constructs an `OutputInfo` for a ZcashName Name Note, whose `(rcm, ψ)`
     /// are supplied directly rather than derived from a `RandomSeed`.
-    #[cfg(feature = "zns")]
+    #[cfg(feature = "unsafe-zns")]
     pub fn new_zns(
         ovk: Option<OutgoingViewingKey>,
         recipient: Address,
@@ -395,7 +395,7 @@ impl OutputInfo {
             recipient,
             value,
             memo,
-            zns_override: Some(crate::note::NoteConstructionOverride { rcm, psi }),
+            zns_override: Some((rcm, psi)),
         }
     }
 
@@ -425,14 +425,17 @@ impl OutputInfo {
         // For a ZNS output the on-chain commitment instead opens to the
         // caller-supplied (rcm, ψ); `Note` itself never carries those values.
         let note = Note::new(self.recipient, self.value, rho, &mut rng);
-        #[cfg(feature = "zns")]
-        let cm_new = match &self.zns_override {
-            Some(ov) => ov
-                .commitment(self.recipient, self.value, rho)
+        #[cfg(feature = "unsafe-zns")]
+        let cm_new = match self.zns_override {
+            Some((rcm, psi)) => note
+                .commitment_with(
+                    crate::note::commitment::NoteCommitTrapdoor::from_inner(rcm),
+                    psi,
+                )
                 .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment"),
             None => note.commitment(),
         };
-        #[cfg(not(feature = "zns"))]
+        #[cfg(not(feature = "unsafe-zns"))]
         let cm_new = note.commitment();
         let cmx = cm_new.into();
 
@@ -533,39 +536,38 @@ impl ActionInfo {
         )
         .expect("α was generated randomly, so an identity rk is vanishingly unlikely");
 
-        // Capture any ZNS overrides before `self.spend` is moved into the
-        // circuit, then patch the circuit witnesses directly so `Note` never
-        // carries (rcm, ψ).
-        #[cfg(feature = "zns")]
-        let spend_override = self.spend.zns_override.map(|ov| {
-            (
-                ov,
-                self.spend.note.recipient(),
-                self.spend.note.value(),
-                self.spend.note.rho(),
-            )
+        // Capture the ZNS witness values before `self.spend` is moved into the
+        // circuit, computing the spend commitment from the note while we still
+        // hold it. `Note` never carries (rcm, ψ); they live only here.
+        #[cfg(feature = "unsafe-zns")]
+        let spend_override = self.spend.zns_override.map(|(rcm, psi)| {
+            let rcm = crate::note::commitment::NoteCommitTrapdoor::from_inner(rcm);
+            let cm_old = self
+                .spend
+                .note
+                .commitment_with(rcm.clone(), psi)
+                .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment");
+            (rcm, psi, cm_old)
         });
-        #[cfg(feature = "zns")]
+        #[cfg(feature = "unsafe-zns")]
         let output_override = self.output.zns_override;
 
         #[allow(unused_mut)]
         let mut circuit =
             Circuit::from_action_context_unchecked(self.spend, note, alpha, self.rcv, circuit_version);
 
-        #[cfg(feature = "zns")]
+        #[cfg(feature = "unsafe-zns")]
         {
             use crate::note::commitment::NoteCommitTrapdoor;
             use halo2_proofs::circuit::Value;
-            if let Some((ov, recipient, value, rho)) = spend_override {
-                circuit.psi_old = Value::known(ov.psi);
-                circuit.rcm_old = Value::known(NoteCommitTrapdoor::from_inner(ov.rcm));
-                circuit.cm_old = Value::known(ov.commitment(recipient, value, rho).expect(
-                    "ZcashName override (rcm, ψ) failed to produce a valid commitment",
-                ));
+            if let Some((rcm, psi, cm_old)) = spend_override {
+                circuit.psi_old = Value::known(psi);
+                circuit.rcm_old = Value::known(rcm);
+                circuit.cm_old = Value::known(cm_old);
             }
-            if let Some(ov) = output_override {
-                circuit.psi_new = Value::known(ov.psi);
-                circuit.rcm_new = Value::known(NoteCommitTrapdoor::from_inner(ov.rcm));
+            if let Some((rcm, psi)) = output_override {
+                circuit.psi_new = Value::known(psi);
+                circuit.rcm_new = Value::known(NoteCommitTrapdoor::from_inner(rcm));
             }
         }
 
@@ -748,7 +750,7 @@ impl Builder {
     /// ZIP 212 `Note` carrying the Name Note's recipient/value/ρ (its `rseed`
     /// is irrelevant — the override supplies `(rcm, ψ)`). Name Notes are
     /// value-0, so the anchor check is trivially satisfied.
-    #[cfg(feature = "zns")]
+    #[cfg(feature = "unsafe-zns")]
     pub fn add_zns_spend(
         &mut self,
         fvk: FullViewingKey,
@@ -763,7 +765,7 @@ impl Builder {
         }
 
         let mut spend = SpendInfo::new(fvk, note, merkle_path).ok_or(SpendError::FvkMismatch)?;
-        spend.zns_override = Some(crate::note::NoteConstructionOverride { rcm, psi });
+        spend.zns_override = Some((rcm, psi));
 
         // Consistency check: all anchors must be equal.
         if !spend.has_matching_anchor(&self.anchor) {
@@ -797,7 +799,7 @@ impl Builder {
     /// Adds a ZcashName Name Note output, whose `(rcm, ψ)` are supplied directly
     /// (typically `BLAKE2b("ZcashName/v1" || …)` computed by the Registry) rather
     /// than derived from a `RandomSeed`. Usually a self-send of value `0`.
-    #[cfg(feature = "zns")]
+    #[cfg(feature = "unsafe-zns")]
     pub fn add_zns_output(
         &mut self,
         ovk: Option<OutgoingViewingKey>,

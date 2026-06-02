@@ -136,57 +136,6 @@ impl RandomSeed {
     }
 }
 
-/// A caller-supplied override for the `(rcm, ψ)` of a [`Note`], used by the
-/// ZcashName Registry's Name Note path instead of the ZIP 212 derivation.
-///
-/// `esk` is deliberately *not* overridden — it is still derived from a random
-/// `rseed`, so ephemeral key (`epk`) behaviour is identical to a normal note.
-#[cfg(feature = "zns")]
-#[derive(Debug, Clone, Copy)]
-pub struct NoteConstructionOverride {
-    /// The note commitment trapdoor `rcm`.
-    pub rcm: pallas::Scalar,
-    /// The Sinsemilla randomizer `ψ`.
-    pub psi: pallas::Base,
-}
-
-#[cfg(feature = "zns")]
-impl NoteConstructionOverride {
-    /// Derives the note commitment for a note built with these overridden
-    /// `(rcm, ψ)`, without storing them on the `Note` type. Returns `None`
-    /// if the inputs do not open to a valid commitment (same precondition
-    /// as [`Note::from_parts`]).
-    pub(crate) fn commitment(
-        &self,
-        recipient: Address,
-        value: NoteValue,
-        rho: Rho,
-    ) -> CtOption<NoteCommitment> {
-        NoteCommitment::derive(
-            recipient.g_d().to_bytes(),
-            recipient.pk_d().to_bytes(),
-            value,
-            rho.into_inner(),
-            self.psi,
-            commitment::NoteCommitTrapdoor::from_inner(self.rcm),
-        )
-    }
-
-    /// Derives the nullifier for a note built with these overridden `(rcm, ψ)`.
-    /// Mirrors [`Note::nullifier`] but reads `ψ` from the override. Returns
-    /// `None` if the override does not open to a valid commitment.
-    pub(crate) fn nullifier(
-        &self,
-        fvk: &FullViewingKey,
-        recipient: Address,
-        value: NoteValue,
-        rho: Rho,
-    ) -> Option<Nullifier> {
-        let cm: Option<NoteCommitment> = self.commitment(recipient, value, rho).into();
-        cm.map(|cm| Nullifier::derive(fvk.nk(), rho.into_inner(), self.psi, cm))
-    }
-}
-
 /// A discrete amount of funds received by an address.
 #[derive(Debug, Copy, Clone)]
 pub struct Note {
@@ -354,6 +303,42 @@ impl Note {
             self.rseed.psi(&self.rho),
             self.commitment(),
         )
+    }
+
+    /// ZcashName: this note's commitment computed from caller-supplied
+    /// `(rcm, ψ)` instead of the `rseed`-derived values. The supplied
+    /// randomness is ephemeral — never stored on the `Note`, so the note's
+    /// ZIP 212 identity is untouched. Returns `None` on the same precondition
+    /// as [`Note::from_parts`]. Gated behind `unsafe-zns`.
+    #[cfg(feature = "unsafe-zns")]
+    pub(crate) fn commitment_with(
+        &self,
+        rcm: commitment::NoteCommitTrapdoor,
+        psi: pallas::Base,
+    ) -> CtOption<NoteCommitment> {
+        NoteCommitment::derive(
+            self.recipient.g_d().to_bytes(),
+            self.recipient.pk_d().to_bytes(),
+            self.value,
+            self.rho.0,
+            psi,
+            rcm,
+        )
+    }
+
+    /// ZcashName: this note's nullifier derived from caller-supplied
+    /// `(rcm, ψ)`. Mirrors [`Note::nullifier`] with the supplied `ψ` and
+    /// commitment substituted for the `rseed`-derived ones. Gated behind
+    /// `unsafe-zns`.
+    #[cfg(feature = "unsafe-zns")]
+    pub(crate) fn nullifier_with(
+        &self,
+        fvk: &FullViewingKey,
+        rcm: commitment::NoteCommitTrapdoor,
+        psi: pallas::Base,
+    ) -> Option<Nullifier> {
+        let cm: Option<NoteCommitment> = self.commitment_with(rcm, psi).into();
+        cm.map(|cm| Nullifier::derive(fvk.nk(), self.rho.0, psi, cm))
     }
 }
 
