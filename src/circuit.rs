@@ -35,7 +35,7 @@ use crate::{
     note::{
         commitment::{NoteCommitTrapdoor, NoteCommitment},
         nullifier::Nullifier,
-        ExtractedNoteCommitment, Note, Rho,
+        ExtractedNoteCommitment, Note, OutputNote, Rho,
     },
     primitives::redpallas::{SpendAuth, VerificationKey},
     spec::NonIdentityPallasPoint,
@@ -215,13 +215,19 @@ impl Circuit {
         circuit_version: OrchardCircuitVersion,
     ) -> Option<Circuit> {
         (Rho::from_nf_old(spend.note.nullifier(&spend.fvk)) == output_note.rho()).then(|| {
-            Self::from_action_context_unchecked(spend, output_note, alpha, rcv, circuit_version)
+            Self::from_action_context_unchecked(
+                spend,
+                OutputNote::from_note(output_note),
+                alpha,
+                rcv,
+                circuit_version,
+            )
         })
     }
 
     pub(crate) fn from_action_context_unchecked(
         spend: SpendInfo,
-        output_note: Note,
+        output_note: OutputNote,
         alpha: pallas::Scalar,
         rcv: ValueCommitTrapdoor,
         circuit_version: OrchardCircuitVersion,
@@ -231,9 +237,8 @@ impl Circuit {
         let psi_old = spend.note.rseed().psi(&rho_old);
         let rcm_old = spend.note.rseed().rcm(&rho_old);
 
-        let rho_new = output_note.rho();
-        let psi_new = output_note.rseed().psi(&rho_new);
-        let rcm_new = output_note.rseed().rcm(&rho_new);
+        let psi_new = output_note.psi();
+        let rcm_new = output_note.rcm();
 
         Circuit {
             path: Value::known(spend.merkle_path.auth_path()),

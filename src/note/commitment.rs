@@ -20,7 +20,7 @@ use crate::{
 };
 
 /// The trapdoor for a note commitment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "unstable-voting-circuits", visibility::make(pub))]
 pub(crate) struct NoteCommitTrapdoor(pub(super) pallas::Scalar);
 

@@ -304,41 +304,95 @@ impl Note {
             self.commitment(),
         )
     }
+}
 
-    /// ZcashName: this note's commitment computed from caller-supplied
-    /// `(rcm, ψ)` instead of the `rseed`-derived values. The supplied
-    /// randomness is ephemeral — never stored on the `Note`, so the note's
-    /// ZIP 212 identity is untouched. Returns `None` on the same precondition
-    /// as [`Note::from_parts`]. Gated behind `unsafe-zns`.
+/// A note commitment opening used by the builder and prover.
+///
+/// ZIP 212 notes derive `rcm` and `psi` from `rseed`; ZcashName outputs use a
+/// caller-supplied opening while keeping `Note` itself ZIP 212-specific.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OutputNote {
+    note: Note,
+    psi: pallas::Base,
+    rcm: commitment::NoteCommitTrapdoor,
+}
+
+impl OutputNote {
+    /// Constructs an output note opening from a standard ZIP 212 note.
+    pub(crate) fn from_note(note: Note) -> Self {
+        let rho = note.rho();
+        Self {
+            note,
+            psi: note.rseed().psi(&rho),
+            rcm: note.rseed().rcm(&rho),
+        }
+    }
+
+    /// Constructs an output note opening from caller-supplied `rcm` and `psi`.
     #[cfg(feature = "unsafe-zns")]
-    pub(crate) fn commitment_with(
-        &self,
+    pub(crate) fn from_parts(
+        note: Note,
         rcm: commitment::NoteCommitTrapdoor,
         psi: pallas::Base,
-    ) -> CtOption<NoteCommitment> {
+    ) -> CtOption<Self> {
+        let output_note = Self { note, psi, rcm };
+        CtOption::new(output_note, output_note.commitment_inner().is_some())
+    }
+
+    /// Returns the ZIP 212 note used for plaintext encryption.
+    pub(crate) fn note(&self) -> Note {
+        self.note
+    }
+
+    /// Returns the recipient of this note.
+    pub(crate) fn recipient(&self) -> Address {
+        self.note.recipient()
+    }
+
+    /// Returns the value of this note.
+    pub(crate) fn value(&self) -> NoteValue {
+        self.note.value()
+    }
+
+    /// Returns rho of this note.
+    pub(crate) fn rho(&self) -> Rho {
+        self.note.rho()
+    }
+
+    /// Returns the `psi` used in the note commitment.
+    pub(crate) fn psi(&self) -> pallas::Base {
+        self.psi
+    }
+
+    /// Returns the trapdoor used in the note commitment.
+    pub(crate) fn rcm(&self) -> commitment::NoteCommitTrapdoor {
+        self.rcm
+    }
+
+    /// Derives the commitment for this opening.
+    pub(crate) fn commitment(&self) -> NoteCommitment {
+        self.commitment_inner().unwrap()
+    }
+
+    fn commitment_inner(&self) -> CtOption<NoteCommitment> {
         NoteCommitment::derive(
-            self.recipient.g_d().to_bytes(),
-            self.recipient.pk_d().to_bytes(),
-            self.value,
-            self.rho.0,
-            psi,
-            rcm,
+            self.recipient().g_d().to_bytes(),
+            self.recipient().pk_d().to_bytes(),
+            self.value(),
+            self.rho().into_inner(),
+            self.psi,
+            self.rcm,
         )
     }
 
-    /// ZcashName: this note's nullifier derived from caller-supplied
-    /// `(rcm, ψ)`. Mirrors [`Note::nullifier`] with the supplied `ψ` and
-    /// commitment substituted for the `rseed`-derived ones. Gated behind
-    /// `unsafe-zns`.
-    #[cfg(feature = "unsafe-zns")]
-    pub(crate) fn nullifier_with(
-        &self,
-        fvk: &FullViewingKey,
-        rcm: commitment::NoteCommitTrapdoor,
-        psi: pallas::Base,
-    ) -> Option<Nullifier> {
-        let cm: Option<NoteCommitment> = self.commitment_with(rcm, psi).into();
-        cm.map(|cm| Nullifier::derive(fvk.nk(), self.rho.0, psi, cm))
+    /// Derives the nullifier for this opening.
+    pub(crate) fn nullifier(&self, fvk: &FullViewingKey) -> Nullifier {
+        Nullifier::derive(
+            fvk.nk(),
+            self.rho().into_inner(),
+            self.psi,
+            self.commitment(),
+        )
     }
 }
 
