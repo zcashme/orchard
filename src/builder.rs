@@ -1559,4 +1559,59 @@ mod tests {
             .unwrap();
         assert_eq!(bundle.value_balance(), &(-5000))
     }
+
+    /// A ZcashName Name Note (a value-0 self-send whose `(rcm, ψ)` are supplied
+    /// directly rather than derived from `rseed`) must produce a proof that
+    /// verifies against its overridden `cmx`.
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn zns_output_bundle_verifies() {
+        use group::ff::Field;
+        use pasta_curves::pallas;
+
+        use crate::circuit::VerifyingKey;
+
+        let pk = ProvingKey::build();
+        let vk = VerifyingKey::build();
+        let mut rng = OsRng;
+
+        // The Registry's self-send address (addr_reg): the Name Note is sent
+        // here. The resolution-target UA lives only inside the hashed (rcm, ψ),
+        // which this layer takes as opaque field elements.
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let addr_reg = fvk.address_at(0u32, Scope::External);
+
+        // Stand-ins for zns_rcm/zns_psi output; any valid field elements
+        // exercise the non-ZIP-212 commitment path.
+        let rcm = pallas::Scalar::random(&mut rng);
+        let psi = pallas::Base::random(&mut rng);
+
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        );
+
+        builder
+            .add_zns_output(None, addr_reg, NoteValue::zero(), [0u8; 512], rcm, psi)
+            .unwrap();
+        let balance: i64 = builder.value_balance().unwrap();
+        assert_eq!(balance, 0);
+
+        let bundle: Bundle<Authorized, i64> = builder
+            .build(&mut rng)
+            .unwrap()
+            .unwrap()
+            .0
+            .create_proof(&pk, &mut rng)
+            .unwrap()
+            .prepare(rng, [0; 32])
+            .finalize()
+            .unwrap();
+        assert_eq!(bundle.value_balance(), &0);
+
+        // The public cmx in the bundle is the overridden commitment; a passing
+        // verification proves the prover bound a non-ZIP-212 (rcm, ψ).
+        bundle.verify_proof(&vk).unwrap();
+    }
 }
