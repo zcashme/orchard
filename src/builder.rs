@@ -1593,7 +1593,7 @@ mod tests {
         );
 
         builder
-            .add_zns_output(None, addr_reg, NoteValue::zero(), [0u8; 512], rcm, psi)
+            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
             .unwrap();
         let balance: i64 = builder.value_balance().unwrap();
         assert_eq!(balance, 0);
@@ -1645,7 +1645,7 @@ mod tests {
         // not derive the spend's (rcm, ψ).
         let old_note = Note::new(
             addr_reg,
-            NoteValue::zero(),
+            NoteValue::ZERO,
             Rho::from_nf_old(Nullifier::dummy(&mut rng)),
             &mut rng,
         );
@@ -1671,7 +1671,7 @@ mod tests {
             .add_zns_output(
                 None,
                 addr_reg,
-                NoteValue::zero(),
+                NoteValue::ZERO,
                 [0u8; 512],
                 rcm_new,
                 psi_new,
