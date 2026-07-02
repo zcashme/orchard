@@ -20,7 +20,7 @@ use crate::{
 };
 
 /// The trapdoor for a note commitment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "unstable-voting-circuits", visibility::make(pub))]
 pub(crate) struct NoteCommitTrapdoor(pub(super) pallas::Scalar);
 
@@ -29,6 +29,12 @@ impl NoteCommitTrapdoor {
     #[cfg_attr(feature = "unstable-voting-circuits", visibility::make(pub))]
     pub(crate) fn inner(&self) -> pallas::Scalar {
         self.0
+    }
+
+    /// Wraps a caller-supplied scalar as a commitment trapdoor (ZcashName).
+    #[cfg(feature = "unsafe-zns")]
+    pub(crate) fn from_inner(inner: pallas::Scalar) -> Self {
+        NoteCommitTrapdoor(inner)
     }
 }
 

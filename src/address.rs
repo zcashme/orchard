@@ -57,6 +57,15 @@ impl Address {
         self.g_d() == other.g_d() && self.pk_d() == other.pk_d()
     }
 
+    /// Raw `(g_d, pk_d)` bytes — the note-commitment inputs a ZNS verifier needs
+    /// to recompute `cmx` for a decrypted Name Note without orchard internals.
+    /// `g_d` is `DiversifyHash(d)`, which is otherwise crate-private.
+    #[cfg(feature = "unsafe-zns")]
+    pub fn zns_commitment_keys(&self) -> ([u8; 32], [u8; 32]) {
+        use group::GroupEncoding;
+        (self.g_d().to_bytes(), self.pk_d.to_bytes())
+    }
+
     /// Serializes this address to its "raw" encoding as specified in [Zcash Protocol Spec § 5.6.4.2: Orchard Raw Payment Addresses][orchardpaymentaddrencoding]
     ///
     /// [orchardpaymentaddrencoding]: https://zips.z.cash/protocol/protocol.pdf#orchardpaymentaddrencoding

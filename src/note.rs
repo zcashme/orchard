@@ -440,6 +440,96 @@ impl Note {
     }
 }
 
+/// A note commitment opening used by the builder and prover, on both the spend
+/// (input) and output sides of an action.
+///
+/// ZIP 212 notes derive `rcm` and `psi` from `rseed`; ZcashName Name Notes use a
+/// caller-supplied opening while keeping `Note` itself ZIP 212-specific.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NoteOpening {
+    note: Note,
+    psi: pallas::Base,
+    rcm: commitment::NoteCommitTrapdoor,
+}
+
+impl NoteOpening {
+    /// Constructs a note opening from a standard ZIP 212 note.
+    pub(crate) fn from_note(note: Note) -> Self {
+        Self {
+            note,
+            psi: note.psi(),
+            rcm: note.rcm(),
+        }
+    }
+
+    /// Constructs a note opening from caller-supplied `rcm` and `psi`.
+    #[cfg(feature = "unsafe-zns")]
+    pub(crate) fn from_parts(
+        note: Note,
+        rcm: commitment::NoteCommitTrapdoor,
+        psi: pallas::Base,
+    ) -> CtOption<Self> {
+        let opening = Self { note, psi, rcm };
+        CtOption::new(opening, opening.commitment_inner().is_some())
+    }
+
+    /// Returns the ZIP 212 note used for plaintext encryption.
+    pub(crate) fn note(&self) -> Note {
+        self.note
+    }
+
+    /// Returns the recipient of this note.
+    pub(crate) fn recipient(&self) -> Address {
+        self.note.recipient()
+    }
+
+    /// Returns the value of this note.
+    pub(crate) fn value(&self) -> NoteValue {
+        self.note.value()
+    }
+
+    /// Returns rho of this note.
+    pub(crate) fn rho(&self) -> Rho {
+        self.note.rho()
+    }
+
+    /// Returns the `psi` used in the note commitment.
+    pub(crate) fn psi(&self) -> pallas::Base {
+        self.psi
+    }
+
+    /// Returns the trapdoor used in the note commitment.
+    pub(crate) fn rcm(&self) -> commitment::NoteCommitTrapdoor {
+        self.rcm
+    }
+
+    /// Derives the commitment for this opening.
+    pub(crate) fn commitment(&self) -> NoteCommitment {
+        self.commitment_inner().unwrap()
+    }
+
+    fn commitment_inner(&self) -> CtOption<NoteCommitment> {
+        NoteCommitment::derive(
+            self.recipient().g_d().to_bytes(),
+            self.recipient().pk_d().to_bytes(),
+            self.value(),
+            self.rho().into_inner(),
+            self.psi,
+            self.rcm,
+        )
+    }
+
+    /// Derives the nullifier for this opening.
+    pub(crate) fn nullifier(&self, fvk: &FullViewingKey) -> Nullifier {
+        Nullifier::derive(
+            fvk.nk(),
+            self.rho().into_inner(),
+            self.psi,
+            self.commitment(),
+        )
+    }
+}
+
 /// An encrypted note.
 #[derive(Clone)]
 pub struct TransmittedNoteCiphertext {
