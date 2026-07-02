@@ -17,7 +17,7 @@ use crate::{
         FullViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey, SpendValidatingKey,
         SpendingKey,
     },
-    note::{ExtractedNoteCommitment, Note, NoteVersion, Nullifier, Rho, TransmittedNoteCiphertext},
+    note::{ExtractedNoteCommitment, Note, NoteOpening, NoteVersion, Nullifier, Rho, TransmittedNoteCiphertext},
     note_encryption::OrchardNoteEncryption,
     primitives::redpallas::{self, Binding, SpendAuth},
     tree::{Anchor, MerklePath},
@@ -288,6 +288,11 @@ pub struct SpendInfo {
     pub(crate) scope: Scope,
     pub(crate) note: Note,
     pub(crate) merkle_path: MerklePath,
+    /// Caller-supplied `(rcm, ψ)` for spending a ZNS Name Note. The `note`
+    /// stays a normal ZIP 212 `Note`; these values are never stored on it —
+    /// they feed a `NoteOpening` and the circuit witnesses at build time.
+    #[cfg(feature = "unsafe-zns")]
+    pub(crate) zns_override: Option<(pallas::Scalar, pallas::Base)>,
 }
 
 impl SpendInfo {
@@ -308,6 +313,8 @@ impl SpendInfo {
             scope,
             note,
             merkle_path,
+            #[cfg(feature = "unsafe-zns")]
+            zns_override: None,
         })
     }
 
@@ -326,7 +333,24 @@ impl SpendInfo {
             scope: Scope::External,
             note,
             merkle_path,
+            #[cfg(feature = "unsafe-zns")]
+            zns_override: None,
         }
+    }
+
+    /// The commitment opening used to spend this note: ZIP 212-derived from the
+    /// note, or the caller-supplied ZNS opening when an override is set.
+    pub(crate) fn opening(&self) -> NoteOpening {
+        #[cfg(feature = "unsafe-zns")]
+        if let Some((rcm, psi)) = self.zns_override {
+            return NoteOpening::from_parts(
+                self.note,
+                crate::note::commitment::NoteCommitTrapdoor::from_inner(rcm),
+                psi,
+            )
+            .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment");
+        }
+        NoteOpening::from_note(self.note)
     }
 
     fn has_matching_anchor(&self, anchor: &Anchor) -> bool {
@@ -353,7 +377,7 @@ impl SpendInfo {
         pallas::Scalar,
         redpallas::VerificationKey<SpendAuth>,
     ) {
-        let nf_old = self.note.nullifier(&self.fvk);
+        let nf_old = self.opening().nullifier(&self.fvk);
         let ak: SpendValidatingKey = self.fvk.clone().into();
         let alpha = pallas::Scalar::random(&mut rng);
         let rk = ak.randomize(&alpha);
@@ -407,6 +431,8 @@ pub struct OutputInfo {
     /// value, and classifies it as a dummy output it tolerates -- rather than reconstructing the
     /// expected ciphertext and rejecting the mismatch.
     randomized_ciphertext: bool,
+    #[cfg(feature = "unsafe-zns")]
+    zns_override: Option<(pallas::Scalar, pallas::Base)>,
 }
 
 impl OutputInfo {
@@ -425,6 +451,31 @@ impl OutputInfo {
             memo,
             note_version,
             randomized_ciphertext: false,
+            #[cfg(feature = "unsafe-zns")]
+            zns_override: None,
+        }
+    }
+
+    /// Constructs an `OutputInfo` for a ZcashName Name Note, whose `(rcm, ψ)`
+    /// are supplied directly rather than derived from a `RandomSeed`.
+    #[cfg(feature = "unsafe-zns")]
+    pub fn new_zns(
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        note_version: NoteVersion,
+        memo: [u8; 512],
+        rcm: pasta_curves::pallas::Scalar,
+        psi: pasta_curves::pallas::Base,
+    ) -> Self {
+        Self {
+            ovk,
+            recipient,
+            value,
+            memo,
+            note_version,
+            randomized_ciphertext: false,
+            zns_override: Some((rcm, psi)),
         }
     }
 
@@ -441,6 +492,8 @@ impl OutputInfo {
             memo: [0u8; 512],
             note_version,
             randomized_ciphertext: true,
+            #[cfg(feature = "unsafe-zns")]
+            zns_override: None,
         }
     }
 
@@ -464,15 +517,33 @@ impl OutputInfo {
         cv_net: &ValueCommitment,
         nf_old: Nullifier,
         mut rng: impl RngCore,
-    ) -> (Note, ExtractedNoteCommitment, TransmittedNoteCiphertext) {
+    ) -> (
+        NoteOpening,
+        ExtractedNoteCommitment,
+        TransmittedNoteCiphertext,
+    ) {
         let rho = Rho::from_nf_old(nf_old);
         let note = Note::new(self.recipient, self.value, rho, self.note_version, &mut rng);
-        let cm_new = note.commitment();
+
+        #[cfg(feature = "unsafe-zns")]
+        let output_note = match self.zns_override {
+            Some((rcm, psi)) => NoteOpening::from_parts(
+                note,
+                crate::note::commitment::NoteCommitTrapdoor::from_inner(rcm),
+                psi,
+            )
+            .expect("ZcashName override (rcm, ψ) failed to produce a valid commitment"),
+            None => NoteOpening::from_note(note),
+        };
+        #[cfg(not(feature = "unsafe-zns"))]
+        let output_note = NoteOpening::from_note(note);
+
+        let cm_new = output_note.commitment();
         let cmx = cm_new.into();
 
         // The Orchard and Ironwood encryptor aliases share encryption behavior;
         // `Note::version()` selects the note plaintext lead byte.
-        let encryptor = OrchardNoteEncryption::new(self.ovk.clone(), note, self.memo);
+        let encryptor = OrchardNoteEncryption::new(self.ovk.clone(), output_note.note(), self.memo);
 
         // `encryptor` still supplies a valid non-identity `epk` and, because these outputs use
         // `ovk = None`, a random `out_ciphertext`. Only `enc_ciphertext` is replaced.
@@ -495,7 +566,7 @@ impl OutputInfo {
             out_ciphertext: encryptor.encrypt_outgoing_plaintext(cv_net, &cmx, &mut rng),
         };
 
-        (note, cmx, encrypted_note)
+        (output_note, cmx, encrypted_note)
     }
 
     fn into_pczt(
@@ -504,7 +575,7 @@ impl OutputInfo {
         nf_old: Nullifier,
         rng: impl RngCore,
     ) -> crate::pczt::Output {
-        let (note, cmx, encrypted_note) = self.build(cv_net, nf_old, rng);
+        let (output_note, cmx, encrypted_note) = self.build(cv_net, nf_old, rng);
 
         crate::pczt::Output {
             cmx,
@@ -512,7 +583,7 @@ impl OutputInfo {
             encrypted_note,
             recipient: Some(self.recipient),
             value: Some(self.value),
-            rseed: Some(*note.rseed()),
+            rseed: Some(*output_note.note().rseed()),
             // TODO: Extract ock from the encryptor and save it so
             // Signers can check `out_ciphertext`.
             ock: None,
@@ -611,32 +682,33 @@ impl ActionInfo {
         let cv_net = ValueCommitment::derive(v_net, self.rcv.clone());
 
         let (nf_old, ak, alpha, rk) = self.spend.build(&mut rng);
-        let (note, cmx, encrypted_note) = self.output.build(&cv_net, nf_old, &mut rng);
+        let (output_note, cmx, encrypted_note) = self.output.build(&cv_net, nf_old, &mut rng);
 
-        (
-            Action::from_parts(
-                nf_old,
-                rk,
-                cmx,
-                encrypted_note,
-                cv_net,
-                SigningMetadata {
-                    dummy_ask: self.spend.dummy_sk.as_ref().map(SpendAuthorizingKey::from),
-                    parts: SigningParts { ak, alpha },
-                },
-            )
-            .expect(
-                "rk is non-identity (α was generated randomly) and epk is a \
-                 valid non-identity point by construction",
-            ),
-            Circuit::from_action_context_unchecked(
-                self.spend,
-                note,
-                alpha,
-                self.rcv,
-                circuit_version,
-            ),
+        let action = Action::from_parts(
+            nf_old,
+            rk,
+            cmx,
+            encrypted_note,
+            cv_net,
+            SigningMetadata {
+                dummy_ask: self.spend.dummy_sk.as_ref().map(SpendAuthorizingKey::from),
+                parts: SigningParts { ak, alpha },
+            },
         )
+        .expect("α was generated randomly, so an identity rk is vanishingly unlikely");
+
+        // The circuit derives spend witnesses from `spend.opening()`, so a ZNS
+        // override flows in through the same path as the output side — no
+        // post-construction patching of `psi_old`/`rcm_old`/`cm_old`.
+        let circuit = Circuit::from_action_context_unchecked(
+            self.spend,
+            output_note,
+            alpha,
+            self.rcv,
+            circuit_version,
+        );
+
+        (action, circuit)
     }
 
     fn build_for_pczt(self, mut rng: impl RngCore) -> crate::pczt::Action {
@@ -816,6 +888,38 @@ impl Builder {
         Ok(())
     }
 
+    /// Adds a ZcashName Name Note to be spent, whose `(rcm, ψ)` are supplied
+    /// directly rather than derived from a `RandomSeed`. `note` must be a normal
+    /// ZIP 212 `Note` carrying the Name Note's recipient/value/ρ (its `rseed`
+    /// is irrelevant — the override supplies `(rcm, ψ)`). Name Notes are
+    /// value-0, so the anchor check is trivially satisfied.
+    #[cfg(feature = "unsafe-zns")]
+    pub fn add_zns_spend(
+        &mut self,
+        fvk: FullViewingKey,
+        note: Note,
+        merkle_path: MerklePath,
+        rcm: pasta_curves::pallas::Scalar,
+        psi: pasta_curves::pallas::Base,
+    ) -> Result<(), SpendError> {
+        let flags = self.flags;
+        if !flags.spends_enabled() {
+            return Err(SpendError::SpendsDisabled);
+        }
+
+        let mut spend = SpendInfo::new(fvk, note, merkle_path).ok_or(SpendError::FvkMismatch)?;
+        spend.zns_override = Some((rcm, psi));
+
+        // Consistency check: all anchors must be equal.
+        if !spend.has_matching_anchor(&self.anchor) {
+            return Err(SpendError::AnchorMismatch);
+        }
+
+        self.spends.push(spend);
+
+        Ok(())
+    }
+
     /// Adds an address which will receive funds in this transaction.
     ///
     /// In a bundle that disables cross-address transfers, ordinary outputs cannot be
@@ -890,6 +994,37 @@ impl Builder {
 
         let change = ChangeInfo::new(fvk, ovk, recipient, value, self.note_version(), memo)?;
         self.changes.push(change);
+
+        Ok(())
+    }
+
+    /// Adds a ZcashName Name Note output, whose `(rcm, ψ)` are supplied directly
+    /// (typically `BLAKE2b("ZcashName/v1" || …)` computed by the Registry) rather
+    /// than derived from a `RandomSeed`. Usually a self-send of value `0`.
+    #[cfg(feature = "unsafe-zns")]
+    pub fn add_zns_output(
+        &mut self,
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        memo: [u8; 512],
+        rcm: pasta_curves::pallas::Scalar,
+        psi: pasta_curves::pallas::Base,
+    ) -> Result<(), OutputError> {
+        let flags = self.flags;
+        if !flags.outputs_enabled() {
+            return Err(OutputError::OutputsDisabled);
+        }
+
+        self.outputs.push(OutputInfo::new_zns(
+            ovk,
+            recipient,
+            value,
+            self.bundle_version.note_version(),
+            memo,
+            rcm,
+            psi,
+        ));
 
         Ok(())
     }
@@ -1219,6 +1354,8 @@ fn build_bundle<B, R: RngCore>(
                 scope,
                 note,
                 merkle_path: MerklePath::dummy(&mut rng),
+                #[cfg(feature = "unsafe-zns")]
+                zns_override: None,
             };
             pairs.push((None, Some(chg_idx), spend, output));
         }
@@ -1937,6 +2074,165 @@ mod tests {
             .finalize()
             .unwrap();
         assert_eq!(bundle.value_balance(), &(-5000))
+    }
+
+    /// A ZcashName Name Note (a value-0 self-send whose `(rcm, ψ)` are supplied
+    /// directly rather than derived from `rseed`) must produce a proof that
+    /// verifies against its overridden `cmx`.
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn zns_output_bundle_verifies() {
+        use group::ff::Field;
+        use pasta_curves::pallas;
+
+        use crate::{
+            bundle::{BundleVersion, Flags},
+            circuit::{ProvingKey, VerifyingKey},
+        };
+
+        let bundle_version = BundleVersion::ironwood_v3();
+        let circuit_version = bundle_version.circuit_version();
+        let note_version = bundle_version.note_version();
+
+        let pk = ProvingKey::build(circuit_version);
+        let vk = VerifyingKey::build(circuit_version);
+        let mut rng = OsRng;
+
+        // The Registry's self-send address (addr_reg): the Name Note is sent
+        // here. The resolution-target UA lives only inside the hashed (rcm, ψ),
+        // which this layer takes as opaque field elements.
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let addr_reg = fvk.address_at(0u32, Scope::External);
+
+        // Stand-ins for zns_rcm/zns_psi output; any valid field elements
+        // exercise the non-ZIP-212 commitment path.
+        let rcm = pallas::Scalar::random(&mut rng);
+        let psi = pallas::Base::random(&mut rng);
+
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            bundle_version,
+            Flags::ENABLED,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        ).unwrap();
+
+        builder
+            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
+            .unwrap();
+        let balance: i64 = builder.value_balance().unwrap();
+        assert_eq!(balance, 0);
+
+        let bundle: Bundle<Authorized, i64> = builder
+            .build(&mut rng)
+            .unwrap()
+            .unwrap()
+            .0
+            .create_proof(&pk, &mut rng)
+            .unwrap()
+            .prepare(rng, [0; 32])
+            .finalize()
+            .unwrap();
+        assert_eq!(bundle.value_balance(), &0);
+
+        // The public cmx in the bundle is the overridden commitment; a passing
+        // verification proves the prover bound a non-ZIP-212 (rcm, ψ).
+        bundle.verify_proof(&vk).unwrap();
+    }
+
+    /// A ZcashName UPDATE: spend a prior (value-0) Name Note and mint the next
+    /// one in the chain, both with caller-supplied `(rcm, ψ)`. Exercises the
+    /// spend-side override — `nf_old` and the in-circuit `cm_old`/`psi_old`/
+    /// `rcm_old` all come from `SpendInfo::opening()`, which no other test hits.
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn zns_spend_bundle_verifies() {
+        use group::ff::Field;
+        use pasta_curves::pallas;
+
+        use crate::{
+            bundle::{BundleVersion, Flags},
+            circuit::{ProvingKey, VerifyingKey},
+            keys::SpendAuthorizingKey,
+            note::{Note, Nullifier, Rho},
+            tree::MerklePath,
+        };
+
+        let bundle_version = BundleVersion::ironwood_v3();
+        let circuit_version = bundle_version.circuit_version();
+        let note_version = bundle_version.note_version();
+
+        let pk = ProvingKey::build(circuit_version);
+        let vk = VerifyingKey::build(circuit_version);
+        let mut rng = OsRng;
+
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let addr_reg = fvk.address_at(0u32, Scope::External);
+
+        // A prior Name Note (value-0 self-send to addr_reg) to spend. Its rho is
+        // fixed at mint time; the rseed here is the decoy plaintext seed and does
+        // not derive the spend's (rcm, ψ).
+        let old_note = Note::new(
+            addr_reg,
+            NoteValue::ZERO,
+            Rho::from_nf_old(Nullifier::dummy(&mut rng)),
+            note_version,
+            &mut rng,
+        );
+
+        // Stand-ins for zns_rcm/zns_psi: the old note's opening and the next
+        // link in the chain. Any valid field elements exercise the override path.
+        let rcm_old = pallas::Scalar::random(&mut rng);
+        let psi_old = pallas::Base::random(&mut rng);
+        let rcm_new = pallas::Scalar::random(&mut rng);
+        let psi_new = pallas::Base::random(&mut rng);
+
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            bundle_version,
+            Flags::ENABLED,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        ).unwrap();
+
+        // Value-0 spends skip the in-circuit Merkle-root check (the constraint is
+        // `v_old = 0 OR root = anchor`), so a dummy path suffices — no real tree.
+        builder
+            .add_zns_spend(fvk, old_note, MerklePath::dummy(&mut rng), rcm_old, psi_old)
+            .unwrap();
+        builder
+            .add_zns_output(
+                None,
+                addr_reg,
+                NoteValue::ZERO,
+                [0u8; 512],
+                rcm_new,
+                psi_new,
+            )
+            .unwrap();
+
+        let balance: i64 = builder.value_balance().unwrap();
+        assert_eq!(balance, 0);
+
+        // Unlike the output-only test, the spend is real (not a dummy), so it
+        // needs a spend-auth signature before finalizing.
+        let ask = SpendAuthorizingKey::from(&sk);
+        let bundle: Bundle<Authorized, i64> = builder
+            .build(&mut rng)
+            .unwrap()
+            .unwrap()
+            .0
+            .create_proof(&pk, &mut rng)
+            .unwrap()
+            .prepare(rng, [0; 32])
+            .sign(&mut rng, &ask)
+            .finalize()
+            .unwrap();
+        assert_eq!(bundle.value_balance(), &0);
+
+        // verify_proof checks the proof against public instances carrying the
+        // overridden nf_old (from the spend opening) and the overridden cmx.
+        bundle.verify_proof(&vk).unwrap();
     }
 
     #[test]
