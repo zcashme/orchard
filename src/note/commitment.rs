@@ -22,21 +22,52 @@ use crate::{
 /// The trapdoor for a note commitment.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "unstable-voting-circuits", visibility::make(pub))]
+#[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
 pub(crate) struct NoteCommitTrapdoor(pub(super) pallas::Scalar);
 
 impl NoteCommitTrapdoor {
     /// Returns the inner scalar value.
     #[cfg_attr(feature = "unstable-voting-circuits", visibility::make(pub))]
+    #[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
     pub(crate) fn inner(&self) -> pallas::Scalar {
         self.0
     }
 
     /// Wraps a caller-supplied scalar as a commitment trapdoor (ZcashName).
     #[cfg(feature = "unsafe-zns")]
-    pub(crate) fn from_inner(inner: pallas::Scalar) -> Self {
+    pub fn from_inner(inner: pallas::Scalar) -> Self {
         NoteCommitTrapdoor(inner)
     }
+
+    /// Deserialize from bytes (ZcashName).
+    #[cfg(feature = "unsafe-zns")]
+    pub fn from_bytes(bytes: &[u8; 32]) -> CtOption<Self> {
+        pallas::Scalar::from_repr(*bytes).map(NoteCommitTrapdoor)
+    }
+
+    /// Serialize to canonical byte representation (ZcashName).
+    #[cfg(feature = "unsafe-zns")]
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_repr()
+    }
 }
+
+#[cfg(feature = "unsafe-zns")]
+impl ConstantTimeEq for NoteCommitTrapdoor {
+    fn ct_eq(&self, other: &Self) -> subtle::Choice {
+        self.0.ct_eq(&other.0)
+    }
+}
+
+#[cfg(feature = "unsafe-zns")]
+impl PartialEq for NoteCommitTrapdoor {
+    fn eq(&self, other: &Self) -> bool {
+        self.ct_eq(other).into()
+    }
+}
+
+#[cfg(feature = "unsafe-zns")]
+impl Eq for NoteCommitTrapdoor {}
 
 /// A commitment to a note.
 #[derive(Clone, Debug)]

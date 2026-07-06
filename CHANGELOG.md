@@ -276,6 +276,24 @@ Existing callers keep the current behavior by constructing bundles with
   - `RandomSeed::rcm` is replaced by `RandomSeed::{rcm_v2, rcm_v3}`: `rcm_v2` is the
     rcm derivation for V2 (ZIP 212) notes, and `rcm_v3` the derivation for V3
     (ZIP 2005, Ironwood) notes.
+- `unsafe-zns`-only (not covered by the crate's semver guarantees; consumed by the
+  `zns-mint` registry signer to mint ZcashName Name Notes whose `(rcm, ψ)` are
+  supplied by the Registry rather than derived from a `RandomSeed`):
+  - `orchard::builder::Builder::add_zns_output` and
+    `Builder::add_zns_spend`, which take a caller-supplied
+    `(rcm: pallas::Scalar, ψ: pallas::Base)` and route them through a
+    `note::NoteOpening` so the in-circuit commitment witnesses bind to the
+    overridden values rather than to the note's ZIP 212 `rseed`.
+  - `orchard::note::NoteOpening::from_parts`, the construction path the
+    `unsafe-zns` builder uses to pair a ZIP 212 `Note` (carrying recipient,
+    value, and ρ) with caller-supplied `(rcm, ψ)`.
+  - `orchard::note::NoteCommitTrapdoor` is re-exported at `orchard::note` under
+    `unsafe-zns`, and its constructors/readers are public: `from_inner`,
+    `from_bytes` (returns `CtOption`, rejecting non-canonical scalars), and
+    `to_bytes` (canonical little-endian). The type also implements
+    `ConstantTimeEq`, `PartialEq`, and `Eq` under `unsafe-zns`, mirroring the
+    existing treatment of `ExtractedNoteCommitment` and `Rho`. The inner scalar
+    remains readable via `NoteCommitTrapdoor::inner`.
 
 ### Removed
 - `orchard::bundle::ProofSizeEnforcement`; `Bundle::try_from_parts` now derives the
