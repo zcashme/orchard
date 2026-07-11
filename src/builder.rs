@@ -17,7 +17,10 @@ use crate::{
         FullViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey, SpendValidatingKey,
         SpendingKey,
     },
-    note::{ExtractedNoteCommitment, Note, NoteOpening, NoteVersion, Nullifier, Rho, TransmittedNoteCiphertext},
+    note::{
+        ExtractedNoteCommitment, Note, NoteOpening, NoteVersion, Nullifier, Rho,
+        TransmittedNoteCiphertext,
+    },
     note_encryption::OrchardNoteEncryption,
     primitives::redpallas::{self, Binding, SpendAuth},
     tree::{Anchor, MerklePath},
@@ -2202,7 +2205,6 @@ mod tests {
 
         let bundle_version = BundleVersion::ironwood_v3();
         let circuit_version = bundle_version.circuit_version();
-        let note_version = bundle_version.note_version();
 
         let pk = ProvingKey::build(circuit_version);
         let vk = VerifyingKey::build(circuit_version);
@@ -2225,7 +2227,8 @@ mod tests {
             bundle_version,
             Flags::ENABLED,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-        ).unwrap();
+        )
+        .unwrap();
 
         builder
             .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
@@ -2303,7 +2306,8 @@ mod tests {
             bundle_version,
             Flags::ENABLED,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Value-0 spends skip the in-circuit Merkle-root check (the constraint is
         // `v_old = 0 OR root = anchor`), so a dummy path suffices — no real tree.
@@ -2335,7 +2339,7 @@ mod tests {
             .create_proof(&pk, &mut rng)
             .unwrap()
             .prepare(rng, [0; 32])
-            .sign(&mut rng, &ask)
+            .sign(rng, &ask)
             .finalize()
             .unwrap();
         assert_eq!(bundle.value_balance(), &0);
