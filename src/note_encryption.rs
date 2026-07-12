@@ -195,6 +195,69 @@ pub type OrchardDomain = NoteEncryptionDomain<OrchardVersion>;
 /// [`NoteVersion::V3`] note plaintexts, which use lead byte `0x03`.
 pub type IronwoodDomain = NoteEncryptionDomain<IronwoodVersion>;
 
+/// Trial-decryption domain for ZcashName Name Notes in the Ironwood pool.
+///
+/// Name Notes use the Ironwood V3 note plaintext format, but their note
+/// commitment is derived from ZcashName data in the encrypted memo rather
+/// than from the plaintext's `rseed`. [`ZnsIronwoodDomain::try_decrypt`]
+/// therefore requires a validator that checks the ZcashName commitment before
+/// returning the decrypted note.
+///
+/// This domain is limited to Ironwood because the `unsafe-zns` builder surface
+/// creates Name Notes only in Ironwood V3 bundles.
+#[cfg(feature = "unsafe-zns")]
+#[derive(Debug)]
+pub struct ZnsIronwoodDomain {
+    rho: Rho,
+    cmx: ExtractedNoteCommitment,
+}
+
+#[cfg(feature = "unsafe-zns")]
+struct ZnsCandidateNote {
+    note: Note,
+    cmx: ExtractedNoteCommitment,
+}
+
+#[cfg(feature = "unsafe-zns")]
+impl ZnsIronwoodDomain {
+    /// Constructs the ZcashName trial-decryption domain for an Ironwood action.
+    pub fn for_action<T>(action: &Action<T>) -> Self {
+        Self {
+            rho: action.rho(),
+            cmx: *action.cmx(),
+        }
+    }
+
+    /// Decrypts an Ironwood Name Note and validates its ZcashName commitment.
+    ///
+    /// The supplied validator receives the authenticated note plaintext, its
+    /// memo, and the action commitment. It must derive the ZcashName opening
+    /// from the memo and check it against `cmx`. If it rejects the opening,
+    /// this method returns `None` and the plaintext is not exposed.
+    ///
+    /// The generic in-band decryption path still authenticates the ciphertext
+    /// and verifies the `rseed`-derived ephemeral key against the action's
+    /// `epk`; only the standard `rseed`-derived `cmx` rule is replaced.
+    pub fn try_decrypt<T, F>(
+        &self,
+        action: &Action<T>,
+        ivk: &PreparedIncomingViewingKey,
+        validate: F,
+    ) -> Option<(Note, Address, [u8; 512])>
+    where
+        F: FnOnce(&Note, &[u8; 512], &ExtractedNoteCommitment) -> subtle::Choice,
+    {
+        let (candidate, recipient, memo) =
+            zcash_note_encryption::try_note_decryption(self, ivk, action)?;
+
+        if bool::from(validate(&candidate.note, &memo, &candidate.cmx)) {
+            Some((candidate.note, recipient, memo))
+        } else {
+            None
+        }
+    }
+}
+
 /// Note encryption logic restricted to a single note plaintext version.
 ///
 /// This domain is used by public bundle helpers that are given the bundle's
@@ -344,6 +407,148 @@ impl<P: DomainPolicy> Domain for NoteEncryptionDomain<P> {
     }
 }
 
+#[cfg(feature = "unsafe-zns")]
+impl Domain for ZnsIronwoodDomain {
+    type EphemeralSecretKey = EphemeralSecretKey;
+    type EphemeralPublicKey = EphemeralPublicKey;
+    type PreparedEphemeralPublicKey = PreparedEphemeralPublicKey;
+    type SharedSecret = SharedSecret;
+    type SymmetricKey = Hash;
+    type Note = ZnsCandidateNote;
+    type Recipient = Address;
+    type DiversifiedTransmissionKey = DiversifiedTransmissionKey;
+    type IncomingViewingKey = PreparedIncomingViewingKey;
+    type OutgoingViewingKey = OutgoingViewingKey;
+    type ValueCommitment = ValueCommitment;
+    type ExtractedCommitment = ExtractedNoteCommitment;
+    type ExtractedCommitmentBytes = [u8; 32];
+    type Memo = [u8; 512];
+
+    fn derive_esk(note: &Self::Note) -> Option<Self::EphemeralSecretKey> {
+        Some(note.note.esk())
+    }
+
+    fn get_pk_d(note: &Self::Note) -> Self::DiversifiedTransmissionKey {
+        *note.note.recipient().pk_d()
+    }
+
+    fn prepare_epk(epk: Self::EphemeralPublicKey) -> Self::PreparedEphemeralPublicKey {
+        PreparedEphemeralPublicKey::new(epk)
+    }
+
+    fn ka_derive_public(
+        note: &Self::Note,
+        esk: &Self::EphemeralSecretKey,
+    ) -> Self::EphemeralPublicKey {
+        esk.derive_public(note.note.recipient().g_d())
+    }
+
+    fn ka_agree_enc(
+        esk: &Self::EphemeralSecretKey,
+        pk_d: &Self::DiversifiedTransmissionKey,
+    ) -> Self::SharedSecret {
+        esk.agree(pk_d)
+    }
+
+    fn ka_agree_dec(
+        ivk: &Self::IncomingViewingKey,
+        epk: &Self::PreparedEphemeralPublicKey,
+    ) -> Self::SharedSecret {
+        epk.agree(ivk)
+    }
+
+    fn kdf(secret: Self::SharedSecret, ephemeral_key: &EphemeralKeyBytes) -> Self::SymmetricKey {
+        secret.kdf_orchard(ephemeral_key)
+    }
+
+    fn note_plaintext_bytes(note: &Self::Note, memo: &Self::Memo) -> NotePlaintextBytes {
+        NoteEncryptionDomain::<IronwoodVersion>::note_plaintext_bytes(&note.note, memo)
+    }
+
+    fn derive_ock(
+        ovk: &Self::OutgoingViewingKey,
+        cv: &Self::ValueCommitment,
+        cmstar_bytes: &Self::ExtractedCommitmentBytes,
+        ephemeral_key: &EphemeralKeyBytes,
+    ) -> OutgoingCipherKey {
+        prf_ock_orchard(ovk, cv, cmstar_bytes, ephemeral_key)
+    }
+
+    fn outgoing_plaintext_bytes(
+        note: &Self::Note,
+        esk: &Self::EphemeralSecretKey,
+    ) -> OutPlaintextBytes {
+        NoteEncryptionDomain::<IronwoodVersion>::outgoing_plaintext_bytes(&note.note, esk)
+    }
+
+    fn epk_bytes(epk: &Self::EphemeralPublicKey) -> EphemeralKeyBytes {
+        epk.to_bytes()
+    }
+
+    fn epk(ephemeral_key: &EphemeralKeyBytes) -> Option<Self::EphemeralPublicKey> {
+        EphemeralPublicKey::from_bytes(&ephemeral_key.0).into()
+    }
+
+    fn cmstar(note: &Self::Note) -> Self::ExtractedCommitment {
+        note.cmx
+    }
+
+    fn parse_note_plaintext_without_memo_ivk(
+        &self,
+        ivk: &Self::IncomingViewingKey,
+        plaintext: &[u8],
+    ) -> Option<(Self::Note, Self::Recipient)> {
+        let (note, recipient) = parse_note_plaintext_without_memo(
+            self.rho,
+            plaintext,
+            NoteVersion::V3,
+            |diversifier| DiversifiedTransmissionKey::derive(ivk, diversifier),
+        )?;
+        Some((
+            ZnsCandidateNote {
+                note,
+                cmx: self.cmx,
+            },
+            recipient,
+        ))
+    }
+
+    fn parse_note_plaintext_without_memo_ovk(
+        &self,
+        pk_d: &Self::DiversifiedTransmissionKey,
+        plaintext: &NotePlaintextBytes,
+    ) -> Option<(Self::Note, Self::Recipient)> {
+        let (note, recipient) = parse_note_plaintext_without_memo(
+            self.rho,
+            &plaintext.0,
+            NoteVersion::V3,
+            |_| *pk_d,
+        )?;
+        Some((
+            ZnsCandidateNote {
+                note,
+                cmx: self.cmx,
+            },
+            recipient,
+        ))
+    }
+
+    fn extract_memo(&self, plaintext: &NotePlaintextBytes) -> Self::Memo {
+        plaintext.0[COMPACT_NOTE_SIZE..NOTE_PLAINTEXT_SIZE]
+            .try_into()
+            .unwrap()
+    }
+
+    fn extract_pk_d(out_plaintext: &OutPlaintextBytes) -> Option<Self::DiversifiedTransmissionKey> {
+        DiversifiedTransmissionKey::from_bytes(out_plaintext.0[0..32].try_into().unwrap()).into()
+    }
+
+    fn extract_esk(out_plaintext: &OutPlaintextBytes) -> Option<Self::EphemeralSecretKey> {
+        EphemeralSecretKey::from_bytes(out_plaintext.0[32..OUT_PLAINTEXT_SIZE].try_into().unwrap())
+            .into()
+    }
+}
+
 impl<P: DomainPolicy> BatchDomain for NoteEncryptionDomain<P> {
     fn batch_kdf<'a>(
         items: impl Iterator<Item = (Option<Self::SharedSecret>, &'a EphemeralKeyBytes)>,
@@ -368,6 +573,21 @@ fn batch_kdf<'a>(
 impl<P: DomainPolicy, T> ShieldedOutput<NoteEncryptionDomain<P>, ENC_CIPHERTEXT_SIZE>
     for Action<T>
 {
+    fn ephemeral_key(&self) -> EphemeralKeyBytes {
+        EphemeralKeyBytes(self.encrypted_note().epk_bytes)
+    }
+
+    fn cmstar_bytes(&self) -> [u8; 32] {
+        self.cmx().to_bytes()
+    }
+
+    fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] {
+        &self.encrypted_note().enc_ciphertext
+    }
+}
+
+#[cfg(feature = "unsafe-zns")]
+impl<T> ShieldedOutput<ZnsIronwoodDomain, ENC_CIPHERTEXT_SIZE> for Action<T> {
     fn ephemeral_key(&self) -> EphemeralKeyBytes {
         EphemeralKeyBytes(self.encrypted_note().epk_bytes)
     }
@@ -558,6 +778,8 @@ mod tests {
         prf_ock_orchard, CompactAction, IronwoodDomain, IronwoodNoteEncryption, OrchardDomain,
         OrchardNoteEncryption,
     };
+    #[cfg(feature = "unsafe-zns")]
+    use super::ZnsIronwoodDomain;
     use crate::{
         action::Action,
         keys::{
@@ -599,6 +821,65 @@ mod tests {
         let cv_net = ValueCommitment::derive(ValueSum::from_raw(5), ValueCommitTrapdoor::zero());
         let cmx = ExtractedNoteCommitment::from(note.commitment());
         let encryptor = IronwoodNoteEncryption::new(Some(fvk.to_ovk(Scope::External)), note, memo);
+        let encrypted_note = TransmittedNoteCiphertext {
+            epk_bytes: IronwoodDomain::epk_bytes(encryptor.epk()).0,
+            enc_ciphertext: encryptor.encrypt_note_plaintext(),
+            out_ciphertext: encryptor.encrypt_outgoing_plaintext(&cv_net, &cmx, &mut rng),
+        };
+        let action = Action::from_parts(
+            nf_old,
+            redpallas::VerificationKey::dummy(),
+            cmx,
+            encrypted_note,
+            cv_net,
+            (),
+        )
+        .expect("a dummy verification key is unlikely to be the identity");
+
+        (action, prepared_ivk, note, recipient, memo)
+    }
+
+    #[cfg(feature = "unsafe-zns")]
+    fn v3_nonstandard_commitment_action() -> (
+        Action<()>,
+        PreparedIncomingViewingKey,
+        Note,
+        Address,
+        [u8; 512],
+    ) {
+        let mut rng = OsRng;
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = crate::keys::FullViewingKey::from(&sk);
+        let incoming_viewing_key = fvk.to_ivk(Scope::External);
+        let prepared_ivk = PreparedIncomingViewingKey::new(&incoming_viewing_key);
+        let recipient = fvk.address_at(0u32, Scope::External);
+        let nf_old = Nullifier::dummy(&mut rng);
+        let rho = Rho::from_nf_old(nf_old);
+        let note = Note::new(
+            recipient,
+            NoteValue::ZERO,
+            rho,
+            NoteVersion::V3,
+            &mut rng,
+        );
+        let memo = [7u8; 512];
+        // A Name Note's action cmx is not derived from the encrypted note's
+        // rseed. A second note gives this test the same structural mismatch
+        // without making ZNS commitment derivation part of the Orchard API.
+        let cmx = ExtractedNoteCommitment::from(
+            Note::new(
+                recipient,
+                NoteValue::ZERO,
+                rho,
+                NoteVersion::V3,
+                &mut rng,
+            )
+            .commitment(),
+        );
+        let cv_net =
+            ValueCommitment::derive(ValueSum::from_raw(0), ValueCommitTrapdoor::zero());
+        let encryptor =
+            IronwoodNoteEncryption::new(Some(fvk.to_ovk(Scope::External)), note, memo);
         let encrypted_note = TransmittedNoteCiphertext {
             epk_bytes: IronwoodDomain::epk_bytes(encryptor.epk()).0,
             enc_ciphertext: encryptor.encrypt_note_plaintext(),
@@ -787,6 +1068,36 @@ mod tests {
             try_note_decryption(&domain, &ivk, &action),
             Some((note, recipient, memo))
         );
+    }
+
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn zns_ironwood_domain_releases_a_note_only_after_caller_validation() {
+        let (action, ivk, note, recipient, memo) = v3_nonstandard_commitment_action();
+
+        // The standard rule derives the commitment from rseed and therefore
+        // correctly rejects this nonstandard commitment.
+        assert!(
+            try_note_decryption(&IronwoodDomain::for_action(&action), &ivk, &action).is_none()
+        );
+
+        let domain = ZnsIronwoodDomain::for_action(&action);
+        assert_eq!(
+            domain.try_decrypt(&action, &ivk, |decrypted, decrypted_memo, cmx| {
+                // ZcashName commitment derivation is intentionally caller-owned.
+                if decrypted == &note && decrypted_memo == &memo && cmx == action.cmx() {
+                    subtle::Choice::from(1)
+                } else {
+                    subtle::Choice::from(0)
+                }
+            }),
+            Some((note, recipient, memo)),
+        );
+
+        let domain = ZnsIronwoodDomain::for_action(&action);
+        assert!(domain
+            .try_decrypt(&action, &ivk, |_, _, _| subtle::Choice::from(0))
+            .is_none());
     }
 
     #[test]

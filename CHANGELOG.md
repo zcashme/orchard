@@ -294,6 +294,10 @@ Existing callers keep the current behavior by constructing bundles with
     `ConstantTimeEq`, `PartialEq`, and `Eq` under `unsafe-zns`, mirroring the
     existing treatment of `ExtractedNoteCommitment` and `Rho`. The inner scalar
     remains readable via `NoteCommitTrapdoor::inner`.
+  - `orchard::note_encryption::ZnsIronwoodDomain`, a trial-decryption domain for
+    Ironwood V3 Name Notes. It retains standard ciphertext authentication and
+    derived-`esk`/`epk` validation, and releases a decrypted note only after the
+    caller validates its Name Note commitment.
 
 ### Removed
 - `orchard::bundle::ProofSizeEnforcement`; `Bundle::try_from_parts` now derives the
