@@ -7,6 +7,56 @@ and this project adheres to Rust's notion of
 
 ## [Unreleased]
 
+### Added
+
+- `unsafe-zns` feature flag, enabling ZcashName Name Notes in the Ironwood pool.
+  Name Notes use the standard Ironwood V3 note plaintext format for encryption, but
+  their note commitment `(rcm, ψ)` is supplied by the caller (typically
+  `BLAKE2b("ZcashName/v1" || ...)` computed from ZNS protocol data) rather than
+  derived from the note's `rseed`. The `rseed` remains in the note for encryption
+  (`esk`) only.
+
+  The fork treats `(rcm, ψ)` as **commitment parameters** carried by the
+  transaction-level `SpendInfo`, not as **note values** stored on `Note`. This
+  follows the upstream design principle that the circuit reads note quantities
+  from `Note` and spending context from `SpendInfo` — and `(rcm, ψ)` are
+  spending context (needed for the proof, nullifier, and anchor check), not note
+  identity. Upstream stored them on `Note` (via `rseed`) as an implementation
+  convenience; the fork separates them.
+
+  New API (all behind `unsafe-zns`):
+  - `Builder::add_zns_spend(fvk, note, merkle_path, rcm, psi)` — spend a Name
+    Note with caller-supplied commitment parameters.
+  - `Builder::add_zns_output(ovk, recipient, value, memo, rcm, psi)` — mint a
+    Name Note with caller-supplied commitment parameters.
+  - `SpendInfo::new_zns(fvk, note, merkle_path, rcm, psi)` — low-level constructor.
+  - `OutputInfo::new_zns(ovk, recipient, value, note_version, memo, rcm, psi)`.
+  - `NoteCommitTrapdoor::from_inner`, `from_bytes`, `to_bytes`, `ConstantTimeEq`,
+    `PartialEq`, `Eq`.
+  - `Address::zns_commitment_keys()` — raw `(g_d, pk_d)` bytes for external
+    commitment recomputation.
+  - `note_encryption::ZnsIronwoodDomain` — trial-decryption domain that passes
+    the action's `cmx` through unchanged and delegates ZNS commitment validation
+    to a caller-supplied callback in `ZnsIronwoodDomain::try_decrypt`.
+  - `note_encryption::ZnsCandidateNote` — the `Domain::Note` type for
+    `ZnsIronwoodDomain`, carrying the decrypted `Note` alongside the action's
+    `cmx`.
+
+### Changed
+
+- `SpendInfo` now carries pre-resolved `psi` and `rcm` as fields, derived from
+  `note.psi()` / `note.rcm()` at construction time. The circuit, nullifier, and
+  anchor check read these fields instead of delegating to `Note`. For standard
+  notes the behavior is identical; for ZNS notes the fields carry caller-supplied
+  values.
+- `OutputInfo::build()` now returns a 5-tuple `(Note, ψ, rcm, cmx, ciphertext)`
+  instead of a 3-tuple, so the circuit receives the resolved commitment
+  parameters for the output side.
+- `Circuit::from_action_context_unchecked` now takes `psi_new` and `rcm_new` as
+  explicit parameters.
+- `NoteCommitment::derive` and `Nullifier::derive` widened from `pub(super)` to
+  `pub(crate)` so the builder can construct overridden commitments.
+
 ## [0.15.5] - 2026-08-02
 
 ### Changed
