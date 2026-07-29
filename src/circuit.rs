@@ -252,31 +252,38 @@ impl Circuit {
         rcv: ValueCommitTrapdoor,
         circuit_version: OrchardCircuitVersion,
     ) -> Option<Circuit> {
-        (Rho::from_nf_old(spend.note.nullifier(&spend.fvk)) == output_note.rho()).then(|| {
-            Self::from_action_context_unchecked(spend, output_note, alpha, rcv, circuit_version)
+        (Rho::from_nf_old(spend.nullifier()) == output_note.rho()).then(|| {
+            Self::from_action_context_unchecked(
+                spend,
+                output_note,
+                output_note.psi(),
+                output_note.rcm(),
+                alpha,
+                rcv,
+                circuit_version,
+            )
         })
     }
 
     pub(crate) fn from_action_context_unchecked(
         spend: SpendInfo,
         output_note: Note,
+        psi_new: pallas::Base,
+        rcm_new: crate::note::commitment::NoteCommitTrapdoor,
         alpha: pallas::Scalar,
         rcv: ValueCommitTrapdoor,
         circuit_version: OrchardCircuitVersion,
     ) -> Circuit {
         let sender_address = spend.note.recipient();
         let rho_old = spend.note.rho();
-        let psi_old = spend.note.psi();
-        let rcm_old = spend.note.rcm();
+        let psi_old = spend.psi();
+        let rcm_old = spend.rcm();
         // Unwitnessed spends (a deferred-anchor bundle, ZIP 374) exist only in bundles
         // that refuse in-memory building, and no public constructor produces one, so a
         // spend that reaches circuit construction always carries its Merkle path.
         let merkle_path = spend
             .merkle_path
             .expect("a spend used as a circuit witness carries a Merkle path");
-
-        let psi_new = output_note.psi();
-        let rcm_new = output_note.rcm();
 
         Circuit {
             path: Value::known(merkle_path.auth_path()),
@@ -287,7 +294,7 @@ impl Circuit {
             rho_old: Value::known(rho_old),
             psi_old: Value::known(psi_old),
             rcm_old: Value::known(rcm_old),
-            cm_old: Value::known(spend.note.commitment()),
+            cm_old: Value::known(spend.commitment()),
             alpha: Value::known(alpha),
             ak: Value::known(spend.fvk.clone().into()),
             nk: Value::known(*spend.fvk.nk()),

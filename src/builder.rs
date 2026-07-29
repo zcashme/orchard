@@ -352,6 +352,16 @@ pub struct SpendInfo {
     pub(crate) scope: Scope,
     pub(crate) note: Note,
     pub(crate) merkle_path: Option<MerklePath>,
+    /// The resolved ψ value for this spend. For standard notes this is derived
+    /// from `rseed` at construction; for ZNS Name Notes (behind `unsafe-zns`)
+    /// it is supplied by the caller. Once stored, this value is never
+    /// re-derived — the circuit, nullifier, and anchor check all read this
+    /// field directly.
+    pub(crate) psi: pallas::Base,
+    /// The resolved `rcm` (commitment trapdoor) for this spend. Same
+    /// semantics as [`SpendInfo::psi`]: resolved at construction, never
+    /// re-derived.
+    pub(crate) rcm: crate::note::commitment::NoteCommitTrapdoor,
 }
 
 impl SpendInfo {
@@ -370,6 +380,8 @@ impl SpendInfo {
             dummy_sk: None,
             fvk,
             scope,
+            psi: note.psi(),
+            rcm: note.rcm(),
             note,
             merkle_path: Some(merkle_path),
         })
@@ -390,6 +402,8 @@ impl SpendInfo {
             dummy_sk: None,
             fvk,
             scope,
+            psi: note.psi(),
+            rcm: note.rcm(),
             note,
             merkle_path: None,
         })
@@ -408,6 +422,8 @@ impl SpendInfo {
             // We use external scope to avoid unnecessary derivations, because the dummy
             // note's spending key is random and thus scoping is irrelevant.
             scope: Scope::External,
+            psi: note.psi(),
+            rcm: note.rcm(),
             note,
             merkle_path,
         }
@@ -424,11 +440,80 @@ impl SpendInfo {
                 // coexists with the placeholder anchor of a deferred-anchor builder.
                 None => true,
                 Some(path) => {
-                    let cm = self.note.commitment();
+                    let cm = self.commitment();
                     &path.root(cm.into()) == anchor
                 }
             }
         }
+    }
+
+    /// Returns the resolved ψ for this spend. For standard notes this was
+    /// derived from `rseed` at construction; for ZNS Name Notes it was supplied
+    /// by the caller. This is a field read — no derivation, no override check.
+    pub(crate) fn psi(&self) -> pallas::Base {
+        self.psi
+    }
+
+    /// Returns the resolved `rcm` (commitment trapdoor) for this spend.
+    /// Same semantics as [`SpendInfo::psi`]: resolved at construction.
+    pub(crate) fn rcm(&self) -> crate::note::commitment::NoteCommitTrapdoor {
+        self.rcm
+    }
+
+    /// Returns the note commitment for this spend, derived from the resolved
+    /// ψ and rcm. For standard notes this equals `self.note.commitment()`;
+    /// for ZNS Name Notes it uses the caller-supplied ψ and rcm.
+    pub(crate) fn commitment(&self) -> crate::note::NoteCommitment {
+        let g_d = self.note.recipient().g_d();
+        let g_d_bytes = g_d.to_bytes();
+        let pk_d = self.note.recipient().pk_d().inner();
+        let pk_d_bytes = pk_d.to_bytes();
+        crate::note::commitment::NoteCommitment::derive(
+            g_d_bytes,
+            pk_d_bytes,
+            self.note.value(),
+            self.note.rho().into_inner(),
+            self.psi,
+            self.rcm,
+        ).unwrap()
+    }
+
+    /// Returns the nullifier for this spend, derived from the resolved ψ
+    /// and commitment. For standard notes this equals
+    /// `self.note.nullifier(&self.fvk)`; for ZNS Name Notes it uses the
+    /// caller-supplied ψ and the overridden commitment.
+    pub(crate) fn nullifier(&self) -> Nullifier {
+        Nullifier::derive(
+            self.fvk.nk(),
+            self.note.rho().into_inner(),
+            self.psi,
+            self.commitment(),
+        )
+    }
+
+    /// Constructs a `SpendInfo` for a ZcashName Name Note, whose `(rcm, ψ)`
+    /// are supplied directly rather than derived from `rseed`. `note` must
+    /// be a standard ZIP 212 `Note` carrying the Name Note's
+    /// recipient/value/ρ (its `rseed` is irrelevant — the override supplies
+    /// `(rcm, ψ)`).
+    #[cfg(feature = "unsafe-zns")]
+    pub fn new_zns(
+        fvk: FullViewingKey,
+        note: Note,
+        merkle_path: MerklePath,
+        rcm: crate::note::commitment::NoteCommitTrapdoor,
+        psi: pallas::Base,
+    ) -> Option<Self> {
+        let scope = fvk.scope_for_address(&note.recipient())?;
+        Some(SpendInfo {
+            dummy_sk: None,
+            fvk,
+            scope,
+            psi,
+            rcm,
+            note,
+            merkle_path: Some(merkle_path),
+        })
     }
 
     /// Builds the spend half of an action.
@@ -445,7 +530,7 @@ impl SpendInfo {
         pallas::Scalar,
         redpallas::VerificationKey<SpendAuth>,
     ) {
-        let nf_old = self.note.nullifier(&self.fvk);
+        let nf_old = self.nullifier();
         let ak: SpendValidatingKey = self.fvk.clone().into();
         let alpha = pallas::Scalar::random(&mut rng);
         let rk = ak.randomize(&alpha);
@@ -499,6 +584,12 @@ pub struct OutputInfo {
     /// value, and classifies it as a dummy output it tolerates -- rather than reconstructing the
     /// expected ciphertext and rejecting the mismatch.
     randomized_ciphertext: bool,
+    /// Caller-supplied `(rcm, ψ)` for a ZNS Name Note output. When `None` (the
+    /// default), `build` derives `ψ`/`rcm` from the note's `rseed` as standard.
+    /// When `Some`, `build` uses these values for the note commitment instead,
+    /// while encryption still uses the note's `rseed`-derived `esk`.
+    #[cfg(feature = "unsafe-zns")]
+    zns_override: Option<(crate::note::commitment::NoteCommitTrapdoor, pallas::Base)>,
 }
 
 impl OutputInfo {
@@ -517,6 +608,8 @@ impl OutputInfo {
             memo,
             note_version,
             randomized_ciphertext: false,
+            #[cfg(feature = "unsafe-zns")]
+            zns_override: None,
         }
     }
 
@@ -539,6 +632,8 @@ impl OutputInfo {
             memo: [0u8; 512],
             note_version,
             randomized_ciphertext: matches!(spent_scope, Scope::External),
+            #[cfg(feature = "unsafe-zns")]
+            zns_override: None,
         }
     }
 
@@ -552,6 +647,29 @@ impl OutputInfo {
         Self::new(None, recipient, NoteValue::ZERO, note_version, [0u8; 512])
     }
 
+    /// Constructs an `OutputInfo` for a ZcashName Name Note, whose `(rcm, ψ)`
+    /// are supplied directly rather than derived from a `RandomSeed`.
+    #[cfg(feature = "unsafe-zns")]
+    pub fn new_zns(
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        note_version: NoteVersion,
+        memo: [u8; 512],
+        rcm: crate::note::commitment::NoteCommitTrapdoor,
+        psi: pallas::Base,
+    ) -> Self {
+        Self {
+            ovk,
+            recipient,
+            value,
+            memo,
+            note_version,
+            randomized_ciphertext: false,
+            zns_override: Some((rcm, psi)),
+        }
+    }
+
     /// Builds the output half of an action.
     ///
     /// Defined in [Zcash Protocol Spec § 4.7.3: Sending Notes (Orchard)][orchardsend].
@@ -562,10 +680,36 @@ impl OutputInfo {
         cv_net: &ValueCommitment,
         nf_old: Nullifier,
         mut rng: impl RngCore,
-    ) -> (Note, ExtractedNoteCommitment, TransmittedNoteCiphertext) {
+    ) -> (
+        Note,
+        pallas::Base,
+        crate::note::commitment::NoteCommitTrapdoor,
+        ExtractedNoteCommitment,
+        TransmittedNoteCiphertext,
+    ) {
         let rho = Rho::from_nf_old(nf_old);
         let note = Note::new(self.recipient, self.value, rho, self.note_version, &mut rng);
-        let cm_new = note.commitment();
+
+        // Resolve ψ/rcm: from the ZNS override if set, else from rseed.
+        #[cfg(feature = "unsafe-zns")]
+        let (psi, rcm) = match self.zns_override {
+            Some((rcm, psi)) => (psi, rcm),
+            None => (note.psi(), note.rcm()),
+        };
+        #[cfg(not(feature = "unsafe-zns"))]
+        let (psi, rcm) = (note.psi(), note.rcm());
+
+        let g_d = self.recipient.g_d();
+        let pk_d = self.recipient.pk_d().inner();
+        let cm_new = crate::note::commitment::NoteCommitment::derive(
+            g_d.to_bytes(),
+            pk_d.to_bytes(),
+            self.value,
+            rho.into_inner(),
+            psi,
+            rcm,
+        )
+        .unwrap();
         let cmx = cm_new.into();
 
         // The Orchard and Ironwood encryptor aliases share encryption behavior;
@@ -593,7 +737,7 @@ impl OutputInfo {
             out_ciphertext: encryptor.encrypt_outgoing_plaintext(cv_net, &cmx, &mut rng),
         };
 
-        (note, cmx, encrypted_note)
+        (note, psi, rcm, cmx, encrypted_note)
     }
 
     fn into_pczt(
@@ -602,7 +746,7 @@ impl OutputInfo {
         nf_old: Nullifier,
         rng: impl RngCore,
     ) -> crate::pczt::Output {
-        let (note, cmx, encrypted_note) = self.build(cv_net, nf_old, rng);
+        let (note, _psi, _rcm, cmx, encrypted_note) = self.build(cv_net, nf_old, rng);
 
         crate::pczt::Output {
             cmx,
@@ -709,7 +853,8 @@ impl ActionInfo {
         let cv_net = ValueCommitment::derive(v_net, self.rcv.clone());
 
         let (nf_old, ak, alpha, rk) = self.spend.build(&mut rng);
-        let (note, cmx, encrypted_note) = self.output.build(&cv_net, nf_old, &mut rng);
+        let (note, psi_new, rcm_new, cmx, encrypted_note) =
+            self.output.build(&cv_net, nf_old, &mut rng);
 
         (
             Action::from_parts(
@@ -730,6 +875,8 @@ impl ActionInfo {
             Circuit::from_action_context_unchecked(
                 self.spend,
                 note,
+                psi_new,
+                rcm_new,
                 alpha,
                 self.rcv,
                 circuit_version,
@@ -1008,6 +1155,40 @@ impl Builder {
         Ok(())
     }
 
+    /// Adds a ZcashName Name Note to be spent, whose `(rcm, ψ)` are supplied
+    /// directly rather than derived from `rseed`. `note` must be a normal
+    /// ZIP 212 `Note` carrying the Name Note's recipient/value/ρ (its `rseed`
+    /// is irrelevant — the override supplies `(rcm, ψ)`). Name Notes are
+    /// value-0, so the anchor check is trivially satisfied.
+    #[cfg(feature = "unsafe-zns")]
+    pub fn add_zns_spend(
+        &mut self,
+        fvk: FullViewingKey,
+        note: Note,
+        merkle_path: MerklePath,
+        rcm: crate::note::commitment::NoteCommitTrapdoor,
+        psi: pallas::Base,
+    ) -> Result<(), SpendError> {
+        let anchor = match &self.anchor {
+            BuilderAnchor::Fixed(anchor) => anchor,
+            BuilderAnchor::Deferred => return Err(SpendError::AnchorDeferred),
+        };
+        if !self.flags.spends_enabled() {
+            return Err(SpendError::SpendsDisabled);
+        }
+
+        let spend =
+            SpendInfo::new_zns(fvk, note, merkle_path, rcm, psi).ok_or(SpendError::FvkMismatch)?;
+
+        if !spend.has_matching_anchor(anchor) {
+            return Err(SpendError::AnchorMismatch);
+        }
+
+        self.spends.push(spend);
+
+        Ok(())
+    }
+
     /// Adds an address which will receive funds in this transaction.
     ///
     /// In a bundle that disables cross-address transfers, ordinary outputs cannot be
@@ -1033,6 +1214,39 @@ impl Builder {
             value,
             self.note_version(),
             memo,
+        ));
+
+        Ok(())
+    }
+
+    /// Adds a ZcashName Name Note output, whose `(rcm, ψ)` are supplied directly
+    /// (typically `BLAKE2b("ZcashName/v1" || …)` computed by the Registry)
+    /// rather than derived from a `RandomSeed`. Usually a self-send of value `0`.
+    #[cfg(feature = "unsafe-zns")]
+    pub fn add_zns_output(
+        &mut self,
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        memo: [u8; 512],
+        rcm: crate::note::commitment::NoteCommitTrapdoor,
+        psi: pallas::Base,
+    ) -> Result<(), OutputError> {
+        if !self.flags.outputs_enabled() {
+            return Err(OutputError::OutputsDisabled);
+        }
+        if !self.flags.cross_address_enabled() {
+            return Err(OutputError::CrossAddressDisabled);
+        }
+
+        self.outputs.push(OutputInfo::new_zns(
+            ovk,
+            recipient,
+            value,
+            self.note_version(),
+            memo,
+            rcm,
+            psi,
         ));
 
         Ok(())
@@ -1425,6 +1639,8 @@ fn build_bundle<B, R: RngCore>(
                 dummy_sk: None,
                 fvk,
                 scope,
+                psi: note.psi(),
+                rcm: note.rcm(),
                 note,
                 merkle_path: Some(MerklePath::dummy(&mut rng)),
             };
