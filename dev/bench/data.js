@@ -1,6 +1,6 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777316041514,
-  "repoUrl": "https://github.com/zcash/orchard",
+  "lastUpdate": 1785358554930,
+  "repoUrl": "https://github.com/zcashme/orchard",
   "entries": {
     "Orchard Benchmarks": [
       {
@@ -2699,6 +2699,186 @@ window.BENCHMARK_DATA = {
             "name": "default_address",
             "value": 488737,
             "range": "± 1343",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "julian.abraham@xaviers.edu.in",
+            "name": "Julian Abraham",
+            "username": "craftsoldier"
+          },
+          "committer": {
+            "email": "julian.abraham@xaviers.edu.in",
+            "name": "Julian Abraham",
+            "username": "craftsoldier"
+          },
+          "distinct": true,
+          "id": "cfee3aa8b11d8d02d4fac9015104f7db7b51b8c0",
+          "message": "zns-orchard 0.15.4: unsafe-zns feature for Ironwood Name Notes\n\nFork of orchard 0.15.4 adding ZcashName (ZNS) support:\n\n-  feature flag for Name Notes in the Ironwood pool\n- Commitment parameters (rcm, psi) carried on SpendInfo as pre-resolved values,\n  not stored on Note or wrapped in a separate type\n- Builder::add_zns_spend / add_zns_output for caller-supplied (rcm, psi)\n- ZnsIronwoodDomain for trial decryption with caller-validated cmx\n- NoteCommitTrapdoor exposed under unsafe-zns (from_inner, from_bytes, to_bytes, Eq)\n- Address::zns_commitment_keys() for external commitment recomputation\n\nDesign rationale: (rcm, psi) are commitment parameters, not note values.\nUpstream stores them on Note via rseed as a convenience; this fork separates\nthem onto SpendInfo (the carrier of spending context) per the upstream principle\nthat the circuit reads note quantities from Note and spending context from\nSpendInfo.\n\nAll 152 tests pass with unsafe-zns; 150 pass without (pure additive).\nStandard (non-ZNS) behavior is unchanged.",
+          "timestamp": "2026-07-30T02:13:34+05:30",
+          "tree_id": "a44a2727378c509ae19fb38d1dff1f2e33d2ca84",
+          "url": "https://github.com/zcashme/orchard/commit/cfee3aa8b11d8d02d4fac9015104f7db7b51b8c0"
+        },
+        "date": 1785358553489,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "proving/bundle/1",
+            "value": 2652168260,
+            "range": "± 115712329",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "proving/bundle/2",
+            "value": 2644190641,
+            "range": "± 5631914",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "proving/bundle/3",
+            "value": 3782827807,
+            "range": "± 8920821",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "proving/bundle/4",
+            "value": 4947430357,
+            "range": "± 48173809",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verifying/bundle/1",
+            "value": 20529332,
+            "range": "± 124033",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verifying/bundle/2",
+            "value": 20570028,
+            "range": "± 145344",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verifying/bundle/3",
+            "value": 23763831,
+            "range": "± 225441",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verifying/bundle/4",
+            "value": 26929929,
+            "range": "± 302488",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "note-decryption/valid",
+            "value": 1376388,
+            "range": "± 9834",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "note-decryption/invalid",
+            "value": 115592,
+            "range": "± 711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "note-decryption/compact-valid",
+            "value": 1373640,
+            "range": "± 7041",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compact-note-decryption/invalid",
+            "value": 1219429379,
+            "range": "± 1663918",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/valid/10",
+            "value": 13843771,
+            "range": "± 44968",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/invalid/10",
+            "value": 1241570,
+            "range": "± 6960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-valid/10",
+            "value": 13796091,
+            "range": "± 18762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-invalid/10",
+            "value": 1200991,
+            "range": "± 8432",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/valid/50",
+            "value": 69119897,
+            "range": "± 96271",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/invalid/50",
+            "value": 6121706,
+            "range": "± 17763",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-valid/50",
+            "value": 68893893,
+            "range": "± 117078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-invalid/50",
+            "value": 5920455,
+            "range": "± 9821",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/valid/100",
+            "value": 138205666,
+            "range": "± 133921",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/invalid/100",
+            "value": 12229749,
+            "range": "± 15204",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-valid/100",
+            "value": 137801093,
+            "range": "± 145773",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-invalid/100",
+            "value": 11825444,
+            "range": "± 19560",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "derive_fvk",
+            "value": 419678,
+            "range": "± 4743",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "default_address",
+            "value": 452848,
+            "range": "± 692",
             "unit": "ns/iter"
           }
         ]
