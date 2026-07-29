@@ -6,6 +6,7 @@ use core::fmt;
 use core::iter;
 
 use ff::Field;
+use group::GroupEncoding;
 use pasta_curves::pallas;
 use rand::{prelude::SliceRandom, CryptoRng, RngCore};
 use zcash_note_encryption::ENC_CIPHERTEXT_SIZE;
@@ -3513,5 +3514,145 @@ mod tests {
         let pk = ProvingKey::build(OrchardCircuitVersion::PostNu6_3);
         let bundle = build_restricted(&mut rng);
         bundle.create_proof(&pk, &mut rng).unwrap();
+    }
+
+    /// A ZcashName Name Note (a value-0 self-send whose `(rcm, ψ)` are supplied
+    /// directly rather than derived from `rseed`) must produce a proof that
+    /// verifies against its overridden `cmx`.
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn zns_output_bundle_verifies() {
+        use group::ff::Field;
+        use pasta_curves::pallas;
+
+        use crate::{
+            bundle::{BundleVersion, Flags},
+            circuit::{ProvingKey, VerifyingKey},
+        };
+
+        let bundle_version = BundleVersion::ironwood_v3();
+        let circuit_version = bundle_version.circuit_version();
+
+        let pk = ProvingKey::build(circuit_version);
+        let vk = VerifyingKey::build(circuit_version);
+        let mut rng = OsRng;
+
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let addr_reg = fvk.address_at(0u32, Scope::External);
+
+        let rcm = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+            pallas::Scalar::random(&mut rng),
+        );
+        let psi = pallas::Base::random(&mut rng);
+
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            bundle_version,
+            Flags::ENABLED,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        )
+        .unwrap();
+
+        builder
+            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
+            .unwrap();
+        let balance: i64 = builder.value_balance().unwrap();
+        assert_eq!(balance, 0);
+
+        let bundle: Bundle<Authorized, i64> = builder
+            .build(&mut rng)
+            .unwrap()
+            .unwrap()
+            .0
+            .create_proof(&pk, &mut rng)
+            .unwrap()
+            .prepare(rng, [0; 32])
+            .finalize()
+            .unwrap();
+        assert_eq!(bundle.value_balance(), &0);
+
+        bundle.verify_proof(&vk).unwrap();
+    }
+
+    /// A ZcashName UPDATE: spend a prior (value-0) Name Note and mint the next
+    /// one in the chain, both with caller-supplied `(rcm, ψ)`. Exercises the
+    /// spend-side override — `nf_old` and the in-circuit `cm_old`/`psi_old`/
+    /// `rcm_old` all come from `SpendInfo::commitment()` / `SpendInfo::psi()` /
+    /// `SpendInfo::rcm()`.
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn zns_spend_bundle_verifies() {
+        use group::ff::Field;
+        use pasta_curves::pallas;
+
+        use crate::{
+            bundle::{BundleVersion, Flags},
+            circuit::{ProvingKey, VerifyingKey},
+            keys::SpendAuthorizingKey,
+            note::{Note, Nullifier, Rho},
+            tree::MerklePath,
+        };
+
+        let bundle_version = BundleVersion::ironwood_v3();
+        let circuit_version = bundle_version.circuit_version();
+        let note_version = bundle_version.note_version();
+
+        let pk = ProvingKey::build(circuit_version);
+        let vk = VerifyingKey::build(circuit_version);
+        let mut rng = OsRng;
+
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let addr_reg = fvk.address_at(0u32, Scope::External);
+
+        let old_note = Note::new(
+            addr_reg,
+            NoteValue::ZERO,
+            Rho::from_nf_old(Nullifier::dummy(&mut rng)),
+            note_version,
+            &mut rng,
+        );
+
+        let rcm_old =
+            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let psi_old = pallas::Base::random(&mut rng);
+        let rcm_new =
+            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let psi_new = pallas::Base::random(&mut rng);
+
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            bundle_version,
+            Flags::ENABLED,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        )
+        .unwrap();
+
+        builder
+            .add_zns_spend(fvk, old_note, MerklePath::dummy(&mut rng), rcm_old, psi_old)
+            .unwrap();
+        builder
+            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm_new, psi_new)
+            .unwrap();
+
+        let balance: i64 = builder.value_balance().unwrap();
+        assert_eq!(balance, 0);
+
+        let ask = SpendAuthorizingKey::from(&sk);
+        let bundle: Bundle<Authorized, i64> = builder
+            .build(&mut rng)
+            .unwrap()
+            .unwrap()
+            .0
+            .create_proof(&pk, &mut rng)
+            .unwrap()
+            .prepare(rng, [0; 32])
+            .sign(rng, &ask)
+            .finalize()
+            .unwrap();
+        assert_eq!(bundle.value_balance(), &0);
+
+        bundle.verify_proof(&vk).unwrap();
     }
 }

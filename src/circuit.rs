@@ -278,6 +278,7 @@ impl Circuit {
         let rho_old = spend.note.rho();
         let psi_old = spend.psi();
         let rcm_old = spend.rcm();
+        let cm_old = spend.commitment();
         // Unwitnessed spends (a deferred-anchor bundle, ZIP 374) exist only in bundles
         // that refuse in-memory building, and no public constructor produces one, so a
         // spend that reaches circuit construction always carries its Merkle path.
@@ -294,7 +295,7 @@ impl Circuit {
             rho_old: Value::known(rho_old),
             psi_old: Value::known(psi_old),
             rcm_old: Value::known(rcm_old),
-            cm_old: Value::known(spend.commitment()),
+            cm_old: Value::known(cm_old),
             alpha: Value::known(alpha),
             ak: Value::known(spend.fvk.clone().into()),
             nk: Value::known(*spend.fvk.nk()),
