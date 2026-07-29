@@ -23,7 +23,7 @@ const ZIP2005_ORCHARD_QR_RCM_DOMAIN_SEPARATOR: u8 = 0x0B;
 pub(crate) mod commitment;
 #[cfg(feature = "unstable-voting-circuits")]
 pub mod commitment;
-#[cfg(feature = "unstable-voting-circuits")]
+#[cfg(any(feature = "unstable-voting-circuits", feature = "unsafe-zns"))]
 pub use self::commitment::NoteCommitTrapdoor;
 pub use self::commitment::{ExtractedNoteCommitment, NoteCommitment};
 
