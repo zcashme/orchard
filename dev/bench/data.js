@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785358554930,
+  "lastUpdate": 1786186622935,
   "repoUrl": "https://github.com/zcashme/orchard",
   "entries": {
     "Orchard Benchmarks": [
@@ -2879,6 +2879,186 @@ window.BENCHMARK_DATA = {
             "name": "default_address",
             "value": 452848,
             "range": "± 692",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "julian.abraham@xaviers.edu.in",
+            "name": "Julian Abraham",
+            "username": "craftsoldier"
+          },
+          "committer": {
+            "email": "julian.abraham@xaviers.edu.in",
+            "name": "Julian Abraham",
+            "username": "craftsoldier"
+          },
+          "distinct": true,
+          "id": "7cd84bbd63b801279009af39c94d2cd5fceda3aa",
+          "message": "zns-orchard 0.15.5: unsafe-zns feature for Ironwood Name Notes\n\nRebased ZNS patches onto upstream orchard 0.15.5 (halo2_proofs >= 0.3.5\nand random match-only fingerprint captures).",
+          "timestamp": "2026-08-08T16:15:02+05:30",
+          "tree_id": "1c322dc5f1b9a027e057ac4aab168f702ea6a641",
+          "url": "https://github.com/zcashme/orchard/commit/7cd84bbd63b801279009af39c94d2cd5fceda3aa"
+        },
+        "date": 1786186621029,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "proving/bundle/1",
+            "value": 1976196394,
+            "range": "± 197932395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "proving/bundle/2",
+            "value": 1978719028,
+            "range": "± 19378760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "proving/bundle/3",
+            "value": 2798778832,
+            "range": "± 27095805",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "proving/bundle/4",
+            "value": 3652782934,
+            "range": "± 22268919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verifying/bundle/1",
+            "value": 16341174,
+            "range": "± 712760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verifying/bundle/2",
+            "value": 16213565,
+            "range": "± 721787",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verifying/bundle/3",
+            "value": 18622148,
+            "range": "± 744975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verifying/bundle/4",
+            "value": 20980127,
+            "range": "± 968170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "note-decryption/valid",
+            "value": 964780,
+            "range": "± 34533",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "note-decryption/invalid",
+            "value": 79706,
+            "range": "± 3119",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "note-decryption/compact-valid",
+            "value": 968410,
+            "range": "± 44129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compact-note-decryption/invalid",
+            "value": 860571419,
+            "range": "± 10763218",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/valid/10",
+            "value": 9761098,
+            "range": "± 356129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/invalid/10",
+            "value": 865030,
+            "range": "± 24584",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-valid/10",
+            "value": 9759675,
+            "range": "± 434403",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-invalid/10",
+            "value": 847438,
+            "range": "± 47947",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/valid/50",
+            "value": 49060158,
+            "range": "± 2206091",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/invalid/50",
+            "value": 4253521,
+            "range": "± 219375",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-valid/50",
+            "value": 48650851,
+            "range": "± 1688434",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-invalid/50",
+            "value": 4102763,
+            "range": "± 230101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/valid/100",
+            "value": 97851762,
+            "range": "± 4260194",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/invalid/100",
+            "value": 8480016,
+            "range": "± 357402",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-valid/100",
+            "value": 97725475,
+            "range": "± 4298852",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "batch-note-decryption/compact-invalid/100",
+            "value": 8245976,
+            "range": "± 445504",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "derive_fvk",
+            "value": 294214,
+            "range": "± 16870",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "default_address",
+            "value": 320841,
+            "range": "± 10859",
             "unit": "ns/iter"
           }
         ]
