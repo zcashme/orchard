@@ -1,6 +1,16 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Published to crates.io as `zns-orchard` (the upstream `orchard` name is
+  taken). The lib target is still named `orchard`, so downstream imports are
+  unchanged.
+- Tag `orchard-name-v0.15.5` marks the last commit whose *package* name is
+  `orchard`; consumers needing a `[patch.crates-io]` source can pin to it:
+  `orchard = { git = "https://github.com/zcashme/orchard", tag = "orchard-name-v0.15.5" }`
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
