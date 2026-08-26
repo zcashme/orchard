@@ -1,5 +1,8 @@
 [package]
-name = "orchard"
+# Published to crates.io as `zns-orchard` because the upstream name is taken.
+# The lib target keeps the name `orchard` so all downstream `use orchard::…`
+# imports are unchanged from upstream zcash/orchard.
+name = "zns-orchard"
 version = "0.15.5"
 authors = [
     "Sean Bowe <ewillbefull@gmail.com>",
@@ -10,11 +13,12 @@ authors = [
 ]
 edition = "2021"
 rust-version = "1.85.1"
-description = "The Orchard shielded transaction protocol"
+description = "The Orchard shielded transaction protocol, with ZNS extensions for Ironwood Name Notes (fork of zcash/orchard 0.15.5)"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/zcash/orchard"
-documentation = "https://docs.rs/orchard"
+repository = "https://github.com/zcashme/orchard"
+documentation = "https://docs.rs/zns-orchard"
 readme = "README.md"
+exclude = ["AGENTS.md", "/book", "/proptest-regressions", "/rust-toolchain.toml"]
 categories = ["cryptography::cryptocurrencies"]
 keywords = ["zcash"]
 
@@ -80,6 +84,7 @@ inferno = { version = "0.11", default-features = false, features = ["multithread
 pprof = { version = "0.11", features = ["criterion", "flamegraph"] }
 
 [lib]
+name = "orchard"
 bench = false
 
 [features]
@@ -88,7 +93,10 @@ std = ["corez/std", "group/wnaf-memuse", "reddsa/std"]
 circuit = ["dep:halo2_gadgets", "dep:halo2_proofs", "std"]
 unstable-frost = []
 unstable-voting-circuits = []
+# ZNS extensions (this fork)
 unsafe-zns = []
+
+# Upstream features
 multicore = ["halo2_proofs?/multicore"]
 dev-graph = ["halo2_proofs?/dev-graph", "image", "plotters"]
 verifier-fingerprint = ["circuit", "halo2_proofs/unstable-verifier-fingerprint"]
