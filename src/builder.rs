@@ -3655,4 +3655,181 @@ mod tests {
 
         bundle.verify_proof(&vk).unwrap();
     }
+
+    /// Demonstrates the dual-opening footgun: after a ZNS name mint, the leaf in
+    /// the note commitment tree is `cmx_Z`, while trial decryption yields a
+    /// ZIP 212 `Note` whose `commitment()` is `cm_A`. Spending that `Note` with
+    /// `add_spend` publishes `nf_A` and verifies, but does not nullify the name.
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn rseed_derived_opening_vs_zns_name_leaf() {
+        use group::ff::Field;
+        use incrementalmerkletree::{Marking, Retention};
+        use pasta_curves::pallas;
+        use shardtree::{store::memory::MemoryShardStore, ShardTree};
+        use subtle::Choice;
+        use zcash_note_encryption::try_note_decryption;
+
+        use crate::{
+            bundle::{BundleVersion, Flags},
+            circuit::{ProvingKey, VerifyingKey},
+            keys::SpendAuthorizingKey,
+            note::{
+                commitment::NoteCommitment, ExtractedNoteCommitment, Nullifier,
+            },
+            note_encryption::{IronwoodDomain, ZnsIronwoodDomain},
+            tree::MerkleHashOrchard,
+        };
+
+        let bundle_version = BundleVersion::ironwood_v3();
+        let circuit_version = bundle_version.circuit_version();
+
+        let pk = ProvingKey::build(circuit_version);
+        let vk = VerifyingKey::build(circuit_version);
+        let mut rng = OsRng;
+
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let addr_reg = fvk.address_at(0u32, Scope::External);
+        let ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
+
+        // ZNS opening (what the name leaf uses).
+        let rcm_z =
+            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let psi_z = pallas::Base::random(&mut rng);
+
+        let mut mint_builder = Builder::new(
+            BundleType::DEFAULT,
+            bundle_version,
+            Flags::ENABLED,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        )
+        .unwrap();
+        mint_builder
+            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm_z, psi_z)
+            .unwrap();
+
+        let mint_bundle: Bundle<Authorized, i64> = mint_builder
+            .build(&mut rng)
+            .unwrap()
+            .unwrap()
+            .0
+            .create_proof(&pk, &mut rng)
+            .unwrap()
+            .prepare(rng, [0; 32])
+            .finalize()
+            .unwrap();
+        mint_bundle.verify_proof(&vk).unwrap();
+
+        let mint_action = mint_bundle.actions().first();
+        let cmx_z = *mint_action.cmx();
+        let (g_d, pk_d) = addr_reg.zns_commitment_keys();
+        let cm_z = NoteCommitment::derive(
+            g_d,
+            pk_d,
+            NoteValue::ZERO,
+            mint_action.rho().into_inner(),
+            psi_z,
+            rcm_z,
+        )
+        .unwrap();
+
+        // Decrypt with the ZNS domain (memo opening check uses Z, not rseed).
+        let domain = ZnsIronwoodDomain::for_action(mint_action);
+        let (note_a, _, _memo) = domain
+            .try_decrypt(mint_action, &ivk, |_note, _memo, cmx| {
+                Choice::from(u8::from(cmx == &cmx_z))
+            })
+            .expect("ZNS validate accepts the minted name");
+
+        let cm_a: ExtractedNoteCommitment = note_a.commitment().into();
+        assert_ne!(
+            cmx_z, cm_a,
+            "on-chain leaf (Z) must differ from rseed-derived commitment (A)"
+        );
+        assert_eq!(
+            ExtractedNoteCommitment::from(cm_z.clone()),
+            cmx_z,
+            "ZNS opening must match the published cmx"
+        );
+
+        // Only cmx_Z is appended to the note commitment tree.
+        let leaf_z = MerkleHashOrchard::from_cmx(&cmx_z);
+        let leaf_a = MerkleHashOrchard::from_cmx(&cm_a);
+        assert_ne!(leaf_z, leaf_a);
+
+        let mut tree: ShardTree<MemoryShardStore<MerkleHashOrchard, u32>, 32, 16> =
+            ShardTree::new(MemoryShardStore::empty(), 100);
+        tree.append(
+            leaf_z,
+            Retention::Checkpoint {
+                id: 0,
+                marking: Marking::Marked,
+            },
+        )
+        .unwrap();
+        let root = tree.root_at_checkpoint_id(&0).unwrap().unwrap();
+        let position = tree.max_leaf_position(None).unwrap().unwrap();
+        let path_z = tree
+            .witness_at_checkpoint_id(position, &0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(root, path_z.root(leaf_z));
+        assert_ne!(root, path_z.root(leaf_a));
+
+        // ZIP 212 trial decrypt rejects the name (rseed commitment ≠ published cmx).
+        assert!(
+            try_note_decryption(&IronwoodDomain::for_action(mint_action), &ivk, mint_action).is_none(),
+            "Ironwood cmstar check must fail for a Name Note"
+        );
+        assert_ne!(
+            cm_a, cmx_z,
+            "rseed-derived commitment must not match the published cmx"
+        );
+
+        let nf_z = Nullifier::derive(
+            fvk.nk(),
+            mint_action.rho().into_inner(),
+            psi_z,
+            cm_z,
+        );
+        let nf_a = note_a.nullifier(&fvk);
+        assert_ne!(nf_z, nf_a);
+
+        // "Update" by spending the decrypted Note (opening A) instead of Z.
+        let mut update_builder = Builder::new(
+            BundleType::DEFAULT,
+            bundle_version,
+            Flags::ENABLED,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        )
+        .unwrap();
+        update_builder
+            .add_spend(fvk.clone(), note_a, MerklePath::dummy(&mut rng))
+            .unwrap();
+        let rcm_z2 =
+            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let psi_z2 = pallas::Base::random(&mut rng);
+        update_builder
+            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm_z2, psi_z2)
+            .unwrap();
+
+        let ask = SpendAuthorizingKey::from(&sk);
+        let update_bundle: Bundle<Authorized, i64> = update_builder
+            .build(&mut rng)
+            .unwrap()
+            .unwrap()
+            .0
+            .create_proof(&pk, &mut rng)
+            .unwrap()
+            .prepare(rng, [0; 32])
+            .sign(rng, &ask)
+            .finalize()
+            .unwrap();
+        update_bundle.verify_proof(&vk).unwrap();
+
+        let nf_published = *update_bundle.actions().first().nullifier();
+        assert_eq!(nf_published, nf_a);
+        assert_ne!(nf_published, nf_z);
+    }
 }
