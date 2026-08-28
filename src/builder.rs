@@ -476,7 +476,8 @@ impl SpendInfo {
             self.note.rho().into_inner(),
             self.psi,
             self.rcm,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     /// Returns the nullifier for this spend, derived from the resolved ψ
@@ -3541,9 +3542,9 @@ mod tests {
         let fvk = FullViewingKey::from(&sk);
         let addr_reg = fvk.address_at(0u32, Scope::External);
 
-        let rcm = crate::note::commitment::NoteCommitTrapdoor::from_inner(
-            pallas::Scalar::random(&mut rng),
-        );
+        let rcm = crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(
+            &mut rng,
+        ));
         let psi = pallas::Base::random(&mut rng);
 
         let mut builder = Builder::new(
@@ -3614,11 +3615,13 @@ mod tests {
             &mut rng,
         );
 
-        let rcm_old =
-            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let rcm_old = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+            pallas::Scalar::random(&mut rng),
+        );
         let psi_old = pallas::Base::random(&mut rng);
-        let rcm_new =
-            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let rcm_new = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+            pallas::Scalar::random(&mut rng),
+        );
         let psi_new = pallas::Base::random(&mut rng);
 
         let mut builder = Builder::new(
@@ -3633,7 +3636,14 @@ mod tests {
             .add_zns_spend(fvk, old_note, MerklePath::dummy(&mut rng), rcm_old, psi_old)
             .unwrap();
         builder
-            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm_new, psi_new)
+            .add_zns_output(
+                None,
+                addr_reg,
+                NoteValue::ZERO,
+                [0u8; 512],
+                rcm_new,
+                psi_new,
+            )
             .unwrap();
 
         let balance: i64 = builder.value_balance().unwrap();
@@ -3674,9 +3684,7 @@ mod tests {
             bundle::{BundleVersion, Flags},
             circuit::{ProvingKey, VerifyingKey},
             keys::SpendAuthorizingKey,
-            note::{
-                commitment::NoteCommitment, ExtractedNoteCommitment, Nullifier,
-            },
+            note::{commitment::NoteCommitment, ExtractedNoteCommitment, Nullifier},
             note_encryption::{IronwoodDomain, ZnsIronwoodDomain},
             tree::MerkleHashOrchard,
         };
@@ -3694,8 +3702,9 @@ mod tests {
         let ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
 
         // ZNS opening (what the name leaf uses).
-        let rcm_z =
-            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let rcm_z = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+            pallas::Scalar::random(&mut rng),
+        );
         let psi_z = pallas::Base::random(&mut rng);
 
         let mut mint_builder = Builder::new(
@@ -3779,7 +3788,8 @@ mod tests {
 
         // ZIP 212 trial decrypt rejects the name (rseed commitment ≠ published cmx).
         assert!(
-            try_note_decryption(&IronwoodDomain::for_action(mint_action), &ivk, mint_action).is_none(),
+            try_note_decryption(&IronwoodDomain::for_action(mint_action), &ivk, mint_action)
+                .is_none(),
             "Ironwood cmstar check must fail for a Name Note"
         );
         assert_ne!(
@@ -3787,12 +3797,7 @@ mod tests {
             "rseed-derived commitment must not match the published cmx"
         );
 
-        let nf_z = Nullifier::derive(
-            fvk.nk(),
-            mint_action.rho().into_inner(),
-            psi_z,
-            cm_z,
-        );
+        let nf_z = Nullifier::derive(fvk.nk(), mint_action.rho().into_inner(), psi_z, cm_z);
         let nf_a = note_a.nullifier(&fvk);
         assert_ne!(nf_z, nf_a);
 
@@ -3807,8 +3812,9 @@ mod tests {
         update_builder
             .add_spend(fvk.clone(), note_a, MerklePath::dummy(&mut rng))
             .unwrap();
-        let rcm_z2 =
-            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let rcm_z2 = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+            pallas::Scalar::random(&mut rng),
+        );
         let psi_z2 = pallas::Base::random(&mut rng);
         update_builder
             .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm_z2, psi_z2)
