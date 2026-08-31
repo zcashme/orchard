@@ -476,7 +476,8 @@ impl SpendInfo {
             self.note.rho().into_inner(),
             self.psi,
             self.rcm,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     /// Returns the nullifier for this spend, derived from the resolved ψ
@@ -3541,9 +3542,9 @@ mod tests {
         let fvk = FullViewingKey::from(&sk);
         let addr_reg = fvk.address_at(0u32, Scope::External);
 
-        let rcm = crate::note::commitment::NoteCommitTrapdoor::from_inner(
-            pallas::Scalar::random(&mut rng),
-        );
+        let rcm = crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(
+            &mut rng,
+        ));
         let psi = pallas::Base::random(&mut rng);
 
         let mut builder = Builder::new(
@@ -3614,11 +3615,13 @@ mod tests {
             &mut rng,
         );
 
-        let rcm_old =
-            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let rcm_old = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+            pallas::Scalar::random(&mut rng),
+        );
         let psi_old = pallas::Base::random(&mut rng);
-        let rcm_new =
-            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let rcm_new = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+            pallas::Scalar::random(&mut rng),
+        );
         let psi_new = pallas::Base::random(&mut rng);
 
         let mut builder = Builder::new(
@@ -3633,7 +3636,14 @@ mod tests {
             .add_zns_spend(fvk, old_note, MerklePath::dummy(&mut rng), rcm_old, psi_old)
             .unwrap();
         builder
-            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm_new, psi_new)
+            .add_zns_output(
+                None,
+                addr_reg,
+                NoteValue::ZERO,
+                [0u8; 512],
+                rcm_new,
+                psi_new,
+            )
             .unwrap();
 
         let balance: i64 = builder.value_balance().unwrap();
