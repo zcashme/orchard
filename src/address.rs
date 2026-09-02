@@ -61,8 +61,7 @@ impl Address {
     /// to recompute `cmx` for a decrypted Name Note without orchard internals.
     /// `g_d` is `DiversifyHash(d)`, which is otherwise crate-private.
     #[cfg(feature = "unsafe-zns")]
-    pub fn zns_commitment_keys(&self) ->
- ([u8; 32], [u8; 32]) {
+    pub fn zns_commitment_keys(&self) -> ([u8; 32], [u8; 32]) {
         use group::GroupEncoding;
         (self.g_d().to_bytes(), self.pk_d.to_bytes())
     }
