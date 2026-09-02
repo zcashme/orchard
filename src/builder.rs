@@ -476,7 +476,8 @@ impl SpendInfo {
             self.note.rho().into_inner(),
             self.psi,
             self.rcm,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     /// Returns the nullifier for this spend, derived from the resolved ψ
@@ -3516,143 +3517,230 @@ mod tests {
         bundle.create_proof(&pk, &mut rng).unwrap();
     }
 
-    /// A ZcashName Name Note (a value-0 self-send whose `(rcm, ψ)` are supplied
-    /// directly rather than derived from `rseed`) must produce a proof that
-    /// verifies against its overridden `cmx`.
+    /// Property tests for the ZNS builder paths.
+    ///
+    /// Both tests share one shape per generated case: supply caller-chosen
+    /// `(rcm, ψ)` (never derived from `rseed`), build, assert that the
+    /// published action values derive from exactly the supplied opening —
+    /// `cmx` on the output side, `nf_old` on the spend side — then run the
+    /// full prove/(sign)/verify tail. Inputs are seeded and reproducible;
+    /// the case count stays small because every case builds Halo2 proofs.
     #[cfg(feature = "unsafe-zns")]
-    #[test]
-    fn zns_output_bundle_verifies() {
-        use group::ff::Field;
-        use pasta_curves::pallas;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(8))]
 
-        use crate::{
-            bundle::{BundleVersion, Flags},
-            circuit::{ProvingKey, VerifyingKey},
-        };
+        /// A ZNS mint: a value-0 self-send whose `(rcm, ψ)` are supplied
+        /// directly rather than derived from `rseed` must commit to exactly
+        /// the supplied opening, and produce a proof that verifies.
+        #[test]
+        fn zns_output_bundle_verifies(
+            sk in crate::keys::testing::arb_spending_key(),
+            rcm_bytes in proptest::collection::vec(any::<u8>(), 64).prop_map(|v| {
+                let mut bytes = [0u8; 64];
+                bytes.copy_from_slice(&v);
+                bytes
+            }),
+            psi_bytes in proptest::collection::vec(any::<u8>(), 64).prop_map(|v| {
+                let mut bytes = [0u8; 64];
+                bytes.copy_from_slice(&v);
+                bytes
+            }),
+            build_seed in prop::array::uniform32(prop::num::u8::ANY),
+        ) {
+            use group::ff::FromUniformBytes;
+            use pasta_curves::pallas;
 
-        let bundle_version = BundleVersion::ironwood_v3();
-        let circuit_version = bundle_version.circuit_version();
+            use crate::{
+                bundle::{BundleVersion, Flags},
+                circuit::{ProvingKey, VerifyingKey},
+                note::{ExtractedNoteCommitment, NoteCommitment},
+            };
 
-        let pk = ProvingKey::build(circuit_version);
-        let vk = VerifyingKey::build(circuit_version);
-        let mut rng = OsRng;
+            let bundle_version = BundleVersion::ironwood_v3();
+            let circuit_version = bundle_version.circuit_version();
 
-        let sk = SpendingKey::random(&mut rng);
-        let fvk = FullViewingKey::from(&sk);
-        let addr_reg = fvk.address_at(0u32, Scope::External);
+            let pk = ProvingKey::build(circuit_version);
+            let vk = VerifyingKey::build(circuit_version);
 
-        let rcm = crate::note::commitment::NoteCommitTrapdoor::from_inner(
-            pallas::Scalar::random(&mut rng),
-        );
-        let psi = pallas::Base::random(&mut rng);
+            let fvk = FullViewingKey::from(&sk);
+            let addr_reg = fvk.address_at(0u32, Scope::External);
 
-        let mut builder = Builder::new(
-            BundleType::DEFAULT,
-            bundle_version,
-            Flags::ENABLED,
-            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-        )
-        .unwrap();
+            let rcm = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+                pallas::Scalar::from_uniform_bytes(&rcm_bytes),
+            );
+            let psi = pallas::Base::from_uniform_bytes(&psi_bytes);
 
-        builder
-            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
-            .unwrap();
-        let balance: i64 = builder.value_balance().unwrap();
-        assert_eq!(balance, 0);
-
-        let bundle: Bundle<Authorized, i64> = builder
-            .build(&mut rng)
-            .unwrap()
-            .unwrap()
-            .0
-            .create_proof(&pk, &mut rng)
-            .unwrap()
-            .prepare(rng, [0; 32])
-            .finalize()
-            .unwrap();
-        assert_eq!(bundle.value_balance(), &0);
-
-        bundle.verify_proof(&vk).unwrap();
-    }
-
-    /// A ZcashName UPDATE: spend a prior (value-0) Name Note and mint the next
-    /// one in the chain, both with caller-supplied `(rcm, ψ)`. Exercises the
-    /// spend-side override — `nf_old` and the in-circuit `cm_old`/`psi_old`/
-    /// `rcm_old` all come from `SpendInfo::commitment()` / `SpendInfo::psi()` /
-    /// `SpendInfo::rcm()`.
-    #[cfg(feature = "unsafe-zns")]
-    #[test]
-    fn zns_spend_bundle_verifies() {
-        use group::ff::Field;
-        use pasta_curves::pallas;
-
-        use crate::{
-            bundle::{BundleVersion, Flags},
-            circuit::{ProvingKey, VerifyingKey},
-            keys::SpendAuthorizingKey,
-            note::{Note, Nullifier, Rho},
-            tree::MerklePath,
-        };
-
-        let bundle_version = BundleVersion::ironwood_v3();
-        let circuit_version = bundle_version.circuit_version();
-        let note_version = bundle_version.note_version();
-
-        let pk = ProvingKey::build(circuit_version);
-        let vk = VerifyingKey::build(circuit_version);
-        let mut rng = OsRng;
-
-        let sk = SpendingKey::random(&mut rng);
-        let fvk = FullViewingKey::from(&sk);
-        let addr_reg = fvk.address_at(0u32, Scope::External);
-
-        let old_note = Note::new(
-            addr_reg,
-            NoteValue::ZERO,
-            Rho::from_nf_old(Nullifier::dummy(&mut rng)),
-            note_version,
-            &mut rng,
-        );
-
-        let rcm_old =
-            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
-        let psi_old = pallas::Base::random(&mut rng);
-        let rcm_new =
-            crate::note::commitment::NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
-        let psi_new = pallas::Base::random(&mut rng);
-
-        let mut builder = Builder::new(
-            BundleType::DEFAULT,
-            bundle_version,
-            Flags::ENABLED,
-            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-        )
-        .unwrap();
-
-        builder
-            .add_zns_spend(fvk, old_note, MerklePath::dummy(&mut rng), rcm_old, psi_old)
-            .unwrap();
-        builder
-            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm_new, psi_new)
+            let mut rng = StdRng::from_seed(build_seed);
+            let mut builder = Builder::new(
+                BundleType::DEFAULT,
+                bundle_version,
+                Flags::ENABLED,
+                EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+            )
             .unwrap();
 
-        let balance: i64 = builder.value_balance().unwrap();
-        assert_eq!(balance, 0);
+            builder
+                .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
+                .unwrap();
+            let balance: i64 = builder.value_balance().unwrap();
+            prop_assert_eq!(balance, 0);
 
-        let ask = SpendAuthorizingKey::from(&sk);
-        let bundle: Bundle<Authorized, i64> = builder
-            .build(&mut rng)
-            .unwrap()
-            .unwrap()
-            .0
-            .create_proof(&pk, &mut rng)
-            .unwrap()
-            .prepare(rng, [0; 32])
-            .sign(rng, &ask)
-            .finalize()
+            let (bundle, metadata) = builder.build(&mut rng).unwrap().unwrap();
+
+            // The published cmx must derive from exactly the supplied (rcm, ψ)
+            // — never a fallback to the note's rseed opening.
+            let action = &bundle.actions()[metadata.output_action_index(0).unwrap()];
+            let (g_d, pk_d) = addr_reg.zns_commitment_keys();
+            let expected_cmx = ExtractedNoteCommitment::from(
+                NoteCommitment::derive(
+                    g_d,
+                    pk_d,
+                    NoteValue::ZERO,
+                    action.rho().into_inner(),
+                    psi,
+                    rcm,
+                )
+                .unwrap(),
+            );
+            prop_assert_eq!(action.cmx().to_bytes(), expected_cmx.to_bytes());
+
+            let bundle: Bundle<Authorized, i64> = bundle
+                .create_proof(&pk, &mut rng)
+                .unwrap()
+                .prepare(&mut rng, [0; 32])
+                .finalize()
+                .unwrap();
+            prop_assert_eq!(bundle.value_balance(), &0);
+
+            bundle.verify_proof(&vk).unwrap();
+        }
+
+        /// A ZNS update: spend a prior (value-0) Name Note and mint the next
+        /// one in the chain, both with caller-supplied `(rcm, ψ)`. The
+        /// published `nf_old` must derive from exactly the supplied
+        /// predecessor opening — never the spent note's rseed opening — and
+        /// the signed bundle must verify.
+        #[test]
+        fn zns_spend_bundle_verifies(
+            sk in crate::keys::testing::arb_spending_key(),
+            rcm_old_bytes in proptest::collection::vec(any::<u8>(), 64).prop_map(|v| {
+                let mut bytes = [0u8; 64];
+                bytes.copy_from_slice(&v);
+                bytes
+            }),
+            psi_old_bytes in proptest::collection::vec(any::<u8>(), 64).prop_map(|v| {
+                let mut bytes = [0u8; 64];
+                bytes.copy_from_slice(&v);
+                bytes
+            }),
+            rcm_new_bytes in proptest::collection::vec(any::<u8>(), 64).prop_map(|v| {
+                let mut bytes = [0u8; 64];
+                bytes.copy_from_slice(&v);
+                bytes
+            }),
+            psi_new_bytes in proptest::collection::vec(any::<u8>(), 64).prop_map(|v| {
+                let mut bytes = [0u8; 64];
+                bytes.copy_from_slice(&v);
+                bytes
+            }),
+            build_seed in prop::array::uniform32(prop::num::u8::ANY),
+        ) {
+            use group::ff::FromUniformBytes;
+            use pasta_curves::pallas;
+
+            use crate::{
+                bundle::{BundleVersion, Flags},
+                circuit::{ProvingKey, VerifyingKey},
+                keys::SpendAuthorizingKey,
+                note::NoteCommitment,
+            };
+
+            let bundle_version = BundleVersion::ironwood_v3();
+            let circuit_version = bundle_version.circuit_version();
+            let note_version = bundle_version.note_version();
+
+            let pk = ProvingKey::build(circuit_version);
+            let vk = VerifyingKey::build(circuit_version);
+
+            let fvk = FullViewingKey::from(&sk);
+            let addr_reg = fvk.address_at(0u32, Scope::External);
+
+            let mut rng = StdRng::from_seed(build_seed);
+
+            let old_rho = Rho::from_nf_old(Nullifier::dummy(&mut rng));
+            let old_note = Note::new(
+                addr_reg,
+                NoteValue::ZERO,
+                old_rho,
+                note_version,
+                &mut rng,
+            );
+
+            let rcm_old = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+                pallas::Scalar::from_uniform_bytes(&rcm_old_bytes),
+            );
+            let psi_old = pallas::Base::from_uniform_bytes(&psi_old_bytes);
+            let rcm_new = crate::note::commitment::NoteCommitTrapdoor::from_inner(
+                pallas::Scalar::from_uniform_bytes(&rcm_new_bytes),
+            );
+            let psi_new = pallas::Base::from_uniform_bytes(&psi_new_bytes);
+
+            // The expected nullifier, derived independently of the Builder
+            // from the supplied predecessor opening.
+            let (g_d, pk_d) = addr_reg.zns_commitment_keys();
+            let cm_old = NoteCommitment::derive(
+                g_d,
+                pk_d,
+                NoteValue::ZERO,
+                old_rho.into_inner(),
+                psi_old,
+                rcm_old,
+            )
             .unwrap();
-        assert_eq!(bundle.value_balance(), &0);
+            let expected_nf = Nullifier::derive(fvk.nk(), old_rho.into_inner(), psi_old, cm_old);
 
-        bundle.verify_proof(&vk).unwrap();
+            let mut builder = Builder::new(
+                BundleType::DEFAULT,
+                bundle_version,
+                Flags::ENABLED,
+                EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+            )
+            .unwrap();
+
+            builder
+                .add_zns_spend(
+                    fvk.clone(),
+                    old_note,
+                    MerklePath::dummy(&mut rng),
+                    rcm_old,
+                    psi_old,
+                )
+                .unwrap();
+            builder
+                .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm_new, psi_new)
+                .unwrap();
+
+            let balance: i64 = builder.value_balance().unwrap();
+            prop_assert_eq!(balance, 0);
+
+            let (bundle, metadata) = builder.build(&mut rng).unwrap().unwrap();
+
+            // The published nf_old must derive from exactly the supplied
+            // predecessor opening — never the note's rseed opening.
+            let action = &bundle.actions()[metadata.spend_action_index(0).unwrap()];
+            prop_assert_eq!(action.nullifier().to_bytes(), expected_nf.to_bytes());
+
+            let ask = SpendAuthorizingKey::from(&sk);
+            let bundle: Bundle<Authorized, i64> = bundle
+                .create_proof(&pk, &mut rng)
+                .unwrap()
+                .prepare(&mut rng, [0; 32])
+                .sign(&mut rng, &ask)
+                .finalize()
+                .unwrap();
+            prop_assert_eq!(bundle.value_balance(), &0);
+
+            bundle.verify_proof(&vk).unwrap();
+        }
     }
 }

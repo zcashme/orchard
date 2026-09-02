@@ -627,7 +627,10 @@ impl Domain for ZnsIronwoodDomain {
             |diversifier| DiversifiedTransmissionKey::derive(ivk, diversifier),
         )?;
         Some((
-            ZnsCandidateNote { note, cmx: self.cmx },
+            ZnsCandidateNote {
+                note,
+                cmx: self.cmx,
+            },
             recipient,
         ))
     }
@@ -637,14 +640,13 @@ impl Domain for ZnsIronwoodDomain {
         pk_d: &Self::DiversifiedTransmissionKey,
         plaintext: &NotePlaintextBytes,
     ) -> Option<(Self::Note, Self::Recipient)> {
-        let (note, recipient) = parse_note_plaintext_without_memo(
-            self.rho,
-            &plaintext.0,
-            NoteVersion::V3,
-            |_| *pk_d,
-        )?;
+        let (note, recipient) =
+            parse_note_plaintext_without_memo(self.rho, &plaintext.0, NoteVersion::V3, |_| *pk_d)?;
         Some((
-            ZnsCandidateNote { note, cmx: self.cmx },
+            ZnsCandidateNote {
+                note,
+                cmx: self.cmx,
+            },
             recipient,
         ))
     }
