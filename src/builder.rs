@@ -3655,4 +3655,142 @@ mod tests {
 
         bundle.verify_proof(&vk).unwrap();
     }
+
+    /// A Name Note's on-chain `cmx` is derived from ZcashName data carried in
+    /// the encrypted memo, not from the note's `rseed`, so standard Ironwood
+    /// trial decryption cannot see the note, and `ZnsIronwoodDomain` itself
+    /// performs no commitment check (`cmstar` passes the action's `cmx`
+    /// through). The validating callback is therefore the security boundary:
+    /// [`Note::zns_cmx`] fed the true `(rcm, ψ)` must authenticate the
+    /// decrypted note against the published `cmx`, and a wrong `ψ` must be
+    /// rejected.
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn zns_output_note_verifies() {
+        use group::ff::Field;
+        use pasta_curves::pallas;
+        use subtle::{Choice, ConstantTimeEq as _};
+
+        use crate::note::commitment::NoteCommitTrapdoor;
+        use crate::note_encryption::{IronwoodDomain, ZnsIronwoodDomain};
+
+        let mut rng = OsRng;
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let addr_reg = fvk.address_at(0u32, Scope::External);
+        let ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
+
+        let rcm = NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let psi = pallas::Base::random(&mut rng);
+
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            BundleVersion::ironwood_v3(),
+            Flags::ENABLED,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        )
+        .unwrap();
+        builder
+            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
+            .unwrap();
+
+        let (bundle, bundle_meta) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+        let action = &bundle.actions()[bundle_meta.output_action_index(0).unwrap()];
+
+        // The note is genuinely a ZNS note: standard trial decryption, whose
+        // `cmstar` re-derives the commitment from `rseed`, cannot see it.
+        // (The plaintext itself decrypts, so this can only be the cm* check.)
+        assert!(try_note_decryption(&IronwoodDomain::for_action(action), &ivk, action).is_none());
+
+        // The validating callback built on `zns_cmx` accepts the true (rcm, ψ).
+        let (note, recipient, memo) = ZnsIronwoodDomain::for_action(action)
+            .try_decrypt(action, &ivk, |note, _memo, cmx| {
+                match note.zns_cmx(rcm, psi) {
+                    Some(computed) => computed.ct_eq(cmx),
+                    None => Choice::from(0u8),
+                }
+            })
+            .expect("a Name Note decrypts and verifies against its published cmx");
+        assert_eq!(recipient, addr_reg);
+        assert_eq!(memo, [0u8; 512]);
+        assert_eq!(note.value(), NoteValue::ZERO);
+        assert_eq!(note.rho(), action.rho());
+
+        // A wrong ψ is rejected: the domain checks nothing itself, so the
+        // validator must.
+        let wrong_psi = psi + pallas::Base::one();
+        assert!(ZnsIronwoodDomain::for_action(action)
+            .try_decrypt(action, &ivk, |note, _memo, cmx| {
+                match note.zns_cmx(rcm, wrong_psi) {
+                    Some(computed) => computed.ct_eq(cmx),
+                    None => Choice::from(0u8),
+                }
+            })
+            .is_none());
+    }
+
+    /// A Name Note's on-chain nullifier is derived from its ZcashName
+    /// `(rcm, ψ)` and the commitment they produce, so [`Note::nullifier`]
+    /// (rseed-derived) does not match the nullifier revealed on spend. A
+    /// wallet that stores `Note::nullifier` for a Name Note can never detect
+    /// it being spent; this pins [`Note::zns_nullifier`] as the method that
+    /// reproduces the builder's published nullifier.
+    #[cfg(feature = "unsafe-zns")]
+    #[test]
+    fn zns_spend_nullifier_matches() {
+        use group::ff::Field;
+        use pasta_curves::pallas;
+
+        use crate::note::commitment::NoteCommitTrapdoor;
+
+        let mut rng = OsRng;
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let addr_reg = fvk.address_at(0u32, Scope::External);
+        let bundle_version = BundleVersion::ironwood_v3();
+
+        let old_note = Note::new(
+            addr_reg,
+            NoteValue::ZERO,
+            Rho::from_nf_old(Nullifier::dummy(&mut rng)),
+            bundle_version.note_version(),
+            &mut rng,
+        );
+
+        let rcm_old = NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
+        let psi_old = pallas::Base::random(&mut rng);
+
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            bundle_version,
+            Flags::ENABLED,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        )
+        .unwrap();
+        builder
+            .add_zns_spend(
+                fvk.clone(),
+                old_note,
+                MerklePath::dummy(&mut rng),
+                rcm_old,
+                psi_old,
+            )
+            .unwrap();
+
+        let (bundle, bundle_meta) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+        let action = &bundle.actions()[bundle_meta.spend_action_index(0).unwrap()];
+
+        // `zns_nullifier` reproduces the nullifier the builder derived and
+        // published on the spend action.
+        assert_eq!(
+            old_note
+                .zns_nullifier(&fvk, rcm_old, psi_old)
+                .expect("a valid Name Note has a nullifier"),
+            *action.nullifier()
+        );
+
+        // The rseed-derived nullifier provably does not match: a wallet that
+        // stores `Note::nullifier` for a Name Note can never see it spent.
+        assert_ne!(old_note.nullifier(&fvk), *action.nullifier());
+    }
 }

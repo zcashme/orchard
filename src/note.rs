@@ -438,6 +438,66 @@ impl Note {
     pub fn nullifier(&self, fvk: &FullViewingKey) -> Nullifier {
         Nullifier::derive(fvk.nk(), self.rho.0, self.psi(), self.commitment())
     }
+
+    /// Derives the extracted note commitment (`cmx`) for this note from
+    /// caller-supplied `(rcm, ψ)` instead of the values derived from the
+    /// note's `rseed`.
+    ///
+    /// A ZcashName Name Note publishes in its action the `cmx` derived from
+    /// ZcashName commitment parameters rather than from `rseed`. Trial
+    /// decryption via
+    /// [`ZnsIronwoodDomain`](crate::note_encryption::ZnsIronwoodDomain)
+    /// recovers `(rcm, ψ)` from the decrypted memo; the note authenticates
+    /// exactly when the `cmx` recomputed by this method equals the action's
+    /// `cmx`.
+    ///
+    /// Returns `None` if the commitment is the identity point; scanners
+    /// should reject the note rather than panic.
+    #[cfg(feature = "unsafe-zns")]
+    pub fn zns_cmx(
+        &self,
+        rcm: commitment::NoteCommitTrapdoor,
+        psi: pallas::Base,
+    ) -> Option<ExtractedNoteCommitment> {
+        let g_d = self.recipient.g_d();
+        let g_d_bytes = g_d.to_bytes();
+        let pk_d = self.recipient.pk_d().inner();
+        let pk_d_bytes = pk_d.to_bytes();
+
+        let cm = Option::<NoteCommitment>::from(NoteCommitment::derive(
+            g_d_bytes, pk_d_bytes, self.value, self.rho.0, psi, rcm,
+        ))?;
+        Some(ExtractedNoteCommitment::from(cm))
+    }
+
+    /// Derives the nullifier for this note from caller-supplied `(rcm, ψ)`
+    /// and the commitment they produce, instead of the values derived from
+    /// the note's `rseed`.
+    ///
+    /// A Name Note's on-chain nullifier is derived from its ZcashName
+    /// commitment parameters, so [`nullifier`](Self::nullifier) does not
+    /// match the nullifier revealed when the note is spent. Wallets must
+    /// store this method's result to detect their own Name Notes being
+    /// spent.
+    ///
+    /// Returns `None` if the commitment is the identity point.
+    #[cfg(feature = "unsafe-zns")]
+    pub fn zns_nullifier(
+        &self,
+        fvk: &FullViewingKey,
+        rcm: commitment::NoteCommitTrapdoor,
+        psi: pallas::Base,
+    ) -> Option<Nullifier> {
+        let g_d = self.recipient.g_d();
+        let g_d_bytes = g_d.to_bytes();
+        let pk_d = self.recipient.pk_d().inner();
+        let pk_d_bytes = pk_d.to_bytes();
+
+        let cm = Option::from(NoteCommitment::derive(
+            g_d_bytes, pk_d_bytes, self.value, self.rho.0, psi, rcm,
+        ))?;
+        Some(Nullifier::derive(fvk.nk(), self.rho.0, psi, cm))
+    }
 }
 
 /// An encrypted note.
