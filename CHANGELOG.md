@@ -45,6 +45,9 @@ and this project adheres to Rust's notion of
     `PartialEq`, `Eq`.
   - `Address::zns_commitment_keys()` — raw `(g_d, pk_d)` bytes for external
     commitment recomputation.
+  - `Note::zns_cmx(rcm, psi)` / `Note::zns_nullifier(fvk, rcm, psi)` — recompute
+    a decrypted Name Note's `cmx` / nullifier from its ZcashName commitment
+    parameters; the scan-side counterparts of the builder's overrides.
   - `note_encryption::ZnsIronwoodDomain` — trial-decryption domain that passes
     the action's `cmx` through unchanged and delegates ZNS commitment validation
     to a caller-supplied callback in `ZnsIronwoodDomain::try_decrypt`.
