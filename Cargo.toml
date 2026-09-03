@@ -3,7 +3,7 @@
 # The lib target keeps the name `orchard` so all downstream `use orchard::…`
 # imports are unchanged from upstream zcash/orchard.
 name = "zns-orchard"
-version = "0.15.5"
+version = "0.15.5.2"
 authors = [
     "Sean Bowe <ewillbefull@gmail.com>",
     "Jack Grigg <thestr4d@gmail.com>",
