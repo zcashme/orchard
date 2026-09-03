@@ -10,15 +10,6 @@ All notable changes to this project will be documented in this file.
 - Tag `orchard-name-v0.15.5` marks the last commit whose *package* name is
   `orchard`; consumers needing a `[patch.crates-io]` source can pin to it:
   `orchard = { git = "https://github.com/zcashme/orchard", tag = "orchard-name-v0.15.5" }`
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to Rust's notion of
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-### Added
-
 - `unsafe-zns` feature flag, enabling ZcashName Name Notes in the Ironwood pool.
   Name Notes use the standard Ironwood V3 note plaintext format for encryption, but
   their note commitment `(rcm, ψ)` is supplied by the caller (typically
@@ -49,11 +40,24 @@ and this project adheres to Rust's notion of
     a decrypted Name Note's `cmx` / nullifier from its ZcashName commitment
     parameters; the scan-side counterparts of the builder's overrides.
   - `note_encryption::ZnsIronwoodDomain` — trial-decryption domain that passes
-    the action's `cmx` through unchanged and delegates ZNS commitment validation
-    to a caller-supplied callback in `ZnsIronwoodDomain::try_decrypt`.
-  - `note_encryption::ZnsCandidateNote` — the `Domain::Note` type for
+    the action's `cmx` through unchanged, returning `CandidateNote` so the
+    caller can verify the ZNS commitment binding.
+  - `note_encryption::CandidateNote` — the `Domain::Note` type for
     `ZnsIronwoodDomain`, carrying the decrypted `Note` alongside the action's
     `cmx`.
+- Domain parity for `ZnsIronwoodDomain`:
+  - `ZnsIronwoodDomain::for_compact_action` and the
+    `ShieldedOutput<ZnsIronwoodDomain, COMPACT_NOTE_SIZE>` impl for
+    `CompactAction` — compact trial decryption, so light clients see Name
+    Notes exactly as full nodes do.
+  - `BatchDomain` for `ZnsIronwoodDomain` — batched trial decryption reusing
+    the family's GLV batch helpers (one field inversion and one IVK
+    decomposition per batch).
+  - `memuse::DynamicUsage` for `ZnsIronwoodDomain`, and `PartialEq` for
+    `CandidateNote`.
+  - `ZnsIronwoodDomain::try_decrypt_compact` and `try_decrypt_sent`,
+    returning `CandidateNote` so downstream callers receive the decrypted
+    note and published `cmx` together.
 
 ### Changed
 
@@ -69,6 +73,12 @@ and this project adheres to Rust's notion of
   explicit parameters.
 - `NoteCommitment::derive` and `Nullifier::derive` widened from `pub(super)` to
   `pub(crate)` so the builder can construct overridden commitments.
+- `ZnsIronwoodDomain` now contains the standard
+  `NoteEncryptionDomain<IronwoodVersion>` and delegates every shared behavior
+  to it. The V3 note-plaintext lead-byte check is inherited from the Ironwood
+  policy rather than assumed, so trial decryption now rejects non-V3 note
+  plaintexts exactly as `IronwoodDomain` does (previously the lead byte was
+  not checked).
 
 ## [0.15.5] - 2026-08-02
 
@@ -923,3 +933,7 @@ Existing callers keep the current behavior by constructing bundles with
 
 ## [0.1.0-beta.1] - 2021-12-17
 Initial release!
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to Rust's notion of
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).

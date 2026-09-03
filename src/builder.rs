@@ -3748,7 +3748,7 @@ mod tests {
     /// the encrypted memo, not from the note's `rseed`, so standard Ironwood
     /// trial decryption cannot see the note, and `ZnsIronwoodDomain` itself
     /// performs no commitment check (`cmstar` passes the action's `cmx`
-    /// through). The validating callback is therefore the security boundary:
+    /// through). The caller is therefore the security boundary:
     /// [`Note::zns_cmx`] fed the true `(rcm, ψ)` must authenticate the
     /// decrypted note against the published `cmx`, and a wrong `ψ` must be
     /// rejected.
@@ -3757,7 +3757,6 @@ mod tests {
     fn zns_output_note_verifies() {
         use group::ff::Field;
         use pasta_curves::pallas;
-        use subtle::{Choice, ConstantTimeEq as _};
 
         use crate::note::commitment::NoteCommitTrapdoor;
         use crate::note_encryption::{IronwoodDomain, ZnsIronwoodDomain};
@@ -3790,31 +3789,36 @@ mod tests {
         // (The plaintext itself decrypts, so this can only be the cm* check.)
         assert!(try_note_decryption(&IronwoodDomain::for_action(action), &ivk, action).is_none());
 
-        // The validating callback built on `zns_cmx` accepts the true (rcm, ψ).
-        let (note, recipient, memo) = ZnsIronwoodDomain::for_action(action)
-            .try_decrypt(action, &ivk, |note, _memo, cmx| {
-                match note.zns_cmx(rcm, psi) {
-                    Some(computed) => computed.ct_eq(cmx),
-                    None => Choice::from(0u8),
-                }
-            })
-            .expect("a Name Note decrypts and verifies against its published cmx");
+        // The candidate carries the decrypted note and the published cmx;
+        // the caller verifies the ZNS binding separately.
+        let (candidate, recipient, memo) = ZnsIronwoodDomain::for_action(action)
+            .try_decrypt(action, &ivk)
+            .expect("a Name Note decrypts");
+        let note = candidate.note();
         assert_eq!(recipient, addr_reg);
         assert_eq!(memo, [0u8; 512]);
         assert_eq!(note.value(), NoteValue::ZERO);
         assert_eq!(note.rho(), action.rho());
+        // Verify the ZNS commitment binding: the true (rcm, ψ) must reproduce
+        // the published cmx.
+        assert_eq!(
+            note.zns_cmx(rcm, psi).expect("zns_cmx succeeds"),
+            *candidate.cmx()
+        );
 
-        // A wrong ψ is rejected: the domain checks nothing itself, so the
-        // validator must.
+        // A wrong ψ does not reproduce the published cmx: the domain returns
+        // the candidate, but the binding check rejects it.
         let wrong_psi = psi + pallas::Base::one();
-        assert!(ZnsIronwoodDomain::for_action(action)
-            .try_decrypt(action, &ivk, |note, _memo, cmx| {
-                match note.zns_cmx(rcm, wrong_psi) {
-                    Some(computed) => computed.ct_eq(cmx),
-                    None => Choice::from(0u8),
-                }
-            })
-            .is_none());
+        let (candidate, _, _) = ZnsIronwoodDomain::for_action(action)
+            .try_decrypt(action, &ivk)
+            .expect("decryption succeeds regardless of ψ");
+        assert_ne!(
+            candidate
+                .note()
+                .zns_cmx(rcm, wrong_psi)
+                .expect("zns_cmx succeeds"),
+            *candidate.cmx()
+        );
     }
 
     /// A Name Note's on-chain nullifier is derived from its ZcashName
