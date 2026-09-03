@@ -40,9 +40,9 @@ All notable changes to this project will be documented in this file.
     a decrypted Name Note's `cmx` / nullifier from its ZcashName commitment
     parameters; the scan-side counterparts of the builder's overrides.
   - `note_encryption::ZnsIronwoodDomain` — trial-decryption domain that passes
-    the action's `cmx` through unchanged and delegates ZNS commitment validation
-    to a caller-supplied callback in `ZnsIronwoodDomain::try_decrypt`.
-  - `note_encryption::ZnsCandidateNote` — the `Domain::Note` type for
+    the action's `cmx` through unchanged, returning `CandidateNote` so the
+    caller can verify the ZNS commitment binding.
+  - `note_encryption::CandidateNote` — the `Domain::Note` type for
     `ZnsIronwoodDomain`, carrying the decrypted `Note` alongside the action's
     `cmx`.
 - Domain parity for `ZnsIronwoodDomain`:
@@ -54,10 +54,10 @@ All notable changes to this project will be documented in this file.
     the family's GLV batch helpers (one field inversion and one IVK
     decomposition per batch).
   - `memuse::DynamicUsage` for `ZnsIronwoodDomain`, and `PartialEq` for
-    `ZnsCandidateNote`.
+    `CandidateNote`.
   - `ZnsIronwoodDomain::try_decrypt_compact` and `try_decrypt_sent`,
-    unwrapping `ZnsCandidateNote` inside the crate so downstream callers
-    receive `(Note, Address, ...)` directly.
+    returning `CandidateNote` so downstream callers receive the decrypted
+    note and published `cmx` together.
 
 ### Changed
 

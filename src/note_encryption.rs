@@ -469,38 +469,55 @@ pub type IronwoodNoteEncryption = zcash_note_encryption::NoteEncryption<Ironwood
 // rseed-derived commitment (`Domain::cmstar` re-derives it from the decrypted
 // note). A ZNS Name Note's `cmx` is derived from ZNS protocol data, not rseed,
 // so the standard domain would reject it. `ZnsIronwoodDomain` passes the
-// action's `cmx` through unchanged (`cmstar` returns it directly) and delegates
-// validation to a caller-supplied callback in `try_decrypt`.
+// action's `cmx` through unchanged (`cmstar` returns it directly); the caller
+// verifies the ZNS commitment binding using the `CandidateNote` returned by
+// `try_decrypt`.
 
 /// Trial-decryption domain for ZcashName Name Notes in the Ironwood pool.
 ///
 /// Name Notes use the Ironwood V3 note plaintext format, but their note
 /// commitment is derived from ZcashName data in the encrypted memo rather
 /// than from the plaintext's `rseed`. [`ZnsIronwoodDomain::try_decrypt`]
-/// therefore requires a validator that checks the ZcashName commitment before
-/// returning the decrypted note.
+/// returns a [`CandidateNote`] carrying the decrypted note and the published
+/// `cmx`; the caller must verify the ZNS commitment binding before trusting
+/// the result.
 #[cfg(feature = "unsafe-zns")]
 #[derive(Debug)]
 pub struct ZnsIronwoodDomain {
-    /// The standard Ironwood card; every shared behavior is inherited from it
-    /// by delegation.
+    /// The standard Ironwood note-encryption domain; every shared behavior is
+    /// inherited from it by delegation.
     ironwood: NoteEncryptionDomain<IronwoodVersion>,
-    /// The action's published `cmx`, passed through `cmstar` for the caller's
-    /// validator to check.
+    /// The action's published `cmx`, passed through `cmstar` for the caller to
+    /// verify.
     cmx: ExtractedNoteCommitment,
 }
 
-/// A candidate note produced during ZcashName trial-decryption of an Ironwood action.
+/// A candidate result from trial decryption of a note whose commitment is
+/// externally supplied. Carries the decrypted [`Note`] alongside the published
+/// [`ExtractedNoteCommitment`]; the binding between them must be verified by the
+/// caller before the note is trusted.
 ///
-/// Carries the decrypted `Note` alongside the action's published `cmx`: the two
-/// halves of a Name Note's identity, fused but unadjudicated (the caller's
-/// validator judges them). Note that `PartialEq` compares notes via their
-/// rseed-derived commitments, plus the carried `cmx`.
+/// `PartialEq` compares notes via their rseed-derived commitments, plus the
+/// carried `cmx`.
 #[cfg(feature = "unsafe-zns")]
-#[derive(Debug, PartialEq)]
-pub struct ZnsCandidateNote {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CandidateNote {
     note: Note,
     cmx: ExtractedNoteCommitment,
+}
+
+#[cfg(feature = "unsafe-zns")]
+impl CandidateNote {
+    /// Returns the decrypted note.
+    pub fn note(&self) -> &Note {
+        &self.note
+    }
+
+    /// Returns the published note commitment that must be verified against the
+    /// note's ZNS binding.
+    pub fn cmx(&self) -> &ExtractedNoteCommitment {
+        &self.cmx
+    }
 }
 
 #[cfg(feature = "unsafe-zns")]
@@ -527,55 +544,43 @@ impl ZnsIronwoodDomain {
         }
     }
 
-    /// Decrypts an Ironwood Name Note and validates its ZcashName commitment.
+    /// Trial-decrypts an Ironwood action, returning a [`CandidateNote`] that
+    /// carries the decrypted note alongside the action's published `cmx`.
     ///
-    /// The supplied validator receives the authenticated note plaintext, its
-    /// memo, and the action commitment. It must derive the ZcashName opening
-    /// from the memo and check it against `cmx`. If it rejects the opening,
-    /// this method returns `None` and the plaintext is not exposed.
-    pub fn try_decrypt<T, F>(
+    /// The caller must verify the ZNS commitment binding before trusting the
+    /// result; the [`CandidateNote`] type exists to make that obligation visible.
+    pub fn try_decrypt<T>(
         &self,
         action: &Action<T>,
         ivk: &PreparedIncomingViewingKey,
-        validate: F,
-    ) -> Option<(Note, Address, [u8; 512])>
-    where
-        F: FnOnce(&Note, &[u8; 512], &ExtractedNoteCommitment) -> subtle::Choice,
-    {
-        let (candidate, recipient, memo) =
-            zcash_note_encryption::try_note_decryption(self, ivk, action)?;
-        if bool::from(validate(&candidate.note, &memo, &candidate.cmx)) {
-            Some((candidate.note, recipient, memo))
-        } else {
-            None
-        }
+    ) -> Option<(CandidateNote, Address, [u8; 512])> {
+        zcash_note_encryption::try_note_decryption(self, ivk, action)
     }
 
-    /// Trial-decrypts a compact action; the caller validates after fetching the full tx.
+    /// Trial-decrypts a compact action, returning a [`CandidateNote`] whose
+    /// commitment binding the caller must verify after fetching the full tx.
     pub fn try_decrypt_compact(
         &self,
         action: &CompactAction,
         ivk: &PreparedIncomingViewingKey,
-    ) -> Option<(Note, Address)> {
-        let (candidate, recipient) =
-            zcash_note_encryption::try_compact_note_decryption(self, ivk, action)?;
-        Some((candidate.note, recipient))
+    ) -> Option<(CandidateNote, Address)> {
+        zcash_note_encryption::try_compact_note_decryption(self, ivk, action)
     }
 
-    /// Recovers a sent Name Note via the outgoing viewing key.
+    /// Recovers a sent Name Note via the outgoing viewing key, returning a
+    /// [`CandidateNote`] whose commitment binding the caller must verify.
     pub fn try_decrypt_sent<T>(
         &self,
         action: &Action<T>,
         ovk: &OutgoingViewingKey,
-    ) -> Option<(Note, Address, [u8; 512])> {
-        let (candidate, recipient, memo) = zcash_note_encryption::try_output_recovery_with_ovk(
+    ) -> Option<(CandidateNote, Address, [u8; 512])> {
+        zcash_note_encryption::try_output_recovery_with_ovk(
             self,
             ovk,
             action,
             action.cv_net(),
             &action.encrypted_note().out_ciphertext,
-        )?;
-        Some((candidate.note, recipient, memo))
+        )
     }
 }
 
@@ -586,7 +591,7 @@ impl Domain for ZnsIronwoodDomain {
     type PreparedEphemeralPublicKey = PreparedEphemeralPublicKey;
     type SharedSecret = SharedSecret;
     type SymmetricKey = Hash;
-    type Note = ZnsCandidateNote;
+    type Note = CandidateNote;
     type Recipient = Address;
     type DiversifiedTransmissionKey = DiversifiedTransmissionKey;
     type IncomingViewingKey = PreparedIncomingViewingKey;
@@ -662,7 +667,7 @@ impl Domain for ZnsIronwoodDomain {
     }
 
     fn cmstar(note: &Self::Note) -> Self::ExtractedCommitment {
-        // The published commitment, passed through for the caller's validator.
+        // The published commitment, passed through for the caller to verify.
         note.cmx
     }
 
@@ -675,7 +680,7 @@ impl Domain for ZnsIronwoodDomain {
             .ironwood
             .parse_note_plaintext_without_memo_ivk(ivk, plaintext)?;
         Some((
-            ZnsCandidateNote {
+            CandidateNote {
                 note,
                 cmx: self.cmx,
             },
@@ -692,7 +697,7 @@ impl Domain for ZnsIronwoodDomain {
             .ironwood
             .parse_note_plaintext_without_memo_ovk(pk_d, plaintext)?;
         Some((
-            ZnsCandidateNote {
+            CandidateNote {
                 note,
                 cmx: self.cmx,
             },
@@ -911,7 +916,7 @@ mod tests {
         OrchardVersion,
     };
     #[cfg(feature = "unsafe-zns")]
-    use super::{ZnsCandidateNote, ZnsIronwoodDomain};
+    use super::{CandidateNote, ZnsIronwoodDomain};
     use crate::{
         action::Action,
         keys::{
@@ -1345,7 +1350,7 @@ mod tests {
         }
     }
 
-    /// The ZNS domain inherits the Ironwood card's note-plaintext version
+    /// The ZNS domain inherits the Ironwood domain's note-plaintext version
     /// policy: a V2-lead-byte plaintext that otherwise parses must be rejected,
     /// exactly as `IronwoodDomain` rejects it.
     #[cfg(feature = "unsafe-zns")]
@@ -1376,8 +1381,8 @@ mod tests {
             .parse_note_plaintext_without_memo_ovk(pk_d, &np_v3)
             .expect("the V3 plaintext parses");
         assert_eq!(parsed_recipient, recipient);
-        assert_eq!(candidate.note, note);
-        assert_eq!(candidate.cmx, *action.cmx());
+        assert_eq!(candidate.note(), &note);
+        assert_eq!(candidate.cmx(), action.cmx());
     }
 
     /// On ordinary Ironwood notes the ZNS domain must agree with
@@ -1393,19 +1398,19 @@ mod tests {
 
         let (_, ironwood_recipient, ironwood_memo) =
             try_note_decryption(&IronwoodDomain::for_action(&action), &ivk, &action)
-                .expect("the Ironwood card decrypts its own note");
+                .expect("the Ironwood domain decrypts its own note");
         let (candidate, zns_recipient, zns_memo) =
             try_note_decryption(&ZnsIronwoodDomain::for_action(&action), &ivk, &action)
-                .expect("the ZNS card sees ordinary notes too");
+                .expect("the ZNS domain sees ordinary notes too");
 
-        assert_eq!(candidate.note, note);
+        assert_eq!(candidate.note(), &note);
         assert_eq!(zns_recipient, ironwood_recipient);
         assert_eq!(recipient, ironwood_recipient);
         assert_eq!(zns_memo, memo);
         assert_eq!(ironwood_memo, memo);
         assert_eq!(
-            candidate.cmx,
-            ExtractedNoteCommitment::from(note.commitment())
+            candidate.cmx(),
+            &ExtractedNoteCommitment::from(note.commitment())
         );
     }
 
@@ -1423,13 +1428,16 @@ mod tests {
 
         use crate::note::commitment::NoteCommitTrapdoor;
 
+        /// Arbitrary note value for Name Note test fixtures.
+        const ZNS_TEST_VALUE: i64 = 42;
+
         let nf_old = Nullifier::dummy(rng);
         let rho = Rho::from_nf_old(nf_old);
         // The plaintext rseed is well-formed but irrelevant to the published
         // commitment, which the ZcashName binding tuple determines.
         let note = Note::new(
             recipient,
-            NoteValue::from_raw(42),
+            NoteValue::from_raw(ZNS_TEST_VALUE as u64),
             rho,
             NoteVersion::V3,
             &mut *rng,
@@ -1440,7 +1448,10 @@ mod tests {
             .zns_cmx(rcm, psi)
             .expect("a random opening yields a non-identity commitment");
 
-        let cv_net = ValueCommitment::derive(ValueSum::from_raw(42), ValueCommitTrapdoor::zero());
+        let cv_net = ValueCommitment::derive(
+            ValueSum::from_raw(ZNS_TEST_VALUE),
+            ValueCommitTrapdoor::zero(),
+        );
         let encryptor = IronwoodNoteEncryption::new(ovk, note, [0u8; 512]);
         let encrypted_note = TransmittedNoteCiphertext {
             epk_bytes: IronwoodDomain::epk_bytes(encryptor.epk()).0,
@@ -1491,7 +1502,7 @@ mod tests {
         )
         .expect("the Name Note decrypts on the compact path");
         assert_eq!(found, recipient);
-        assert_eq!(candidate.note, note);
+        assert_eq!(candidate.note(), &note);
     }
 
     /// The compact and full-ciphertext paths must give the same answer for
@@ -1521,7 +1532,7 @@ mod tests {
 
         assert_eq!(full_recipient, recipient);
         assert_eq!(compact_recipient, recipient);
-        assert_eq!(candidate.note, note);
+        assert_eq!(candidate.note(), &note);
     }
 
     /// The batched trial-decryption pipeline must produce exactly the
@@ -1565,7 +1576,7 @@ mod tests {
             .collect();
         let batched = batch::try_compact_note_decryption(&ivks, &items);
 
-        let per_item: Vec<Option<((ZnsCandidateNote, Address), usize)>> = actions
+        let per_item: Vec<Option<((CandidateNote, Address), usize)>> = actions
             .iter()
             .map(|a| {
                 let domain = ZnsIronwoodDomain::for_compact_action(a);
@@ -1610,7 +1621,7 @@ mod tests {
         )
         .expect("a Name Note is recoverable by its sender");
 
-        assert_eq!(recovered.note, note);
+        assert_eq!(recovered.note(), &note);
         assert_eq!(recovered_to, recipient);
         assert_eq!(memo, [0u8; 512]);
     }
