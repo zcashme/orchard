@@ -1,8 +1,7 @@
 [package]
-# Published to crates.io as `zns-orchard` because the upstream name is taken.
-# The lib target keeps the name `orchard` so all downstream `use orchard::…`
-# imports are unchanged from upstream zcash/orchard.
-name = "zns-orchard"
+# ZNS orchard fork, consumed via zns-orchard-v* git tags.
+# Package and lib name `orchard`.
+name = "orchard"
 version = "0.15.5"
 authors = [
     "Sean Bowe <ewillbefull@gmail.com>",
