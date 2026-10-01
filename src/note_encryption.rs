@@ -662,6 +662,10 @@ impl Domain for ZnsIronwoodDomain {
     type ExtractedCommitment = ExtractedNoteCommitment;
     type ExtractedCommitmentBytes = [u8; 32];
     type Memo = [u8; 512];
+    type NotePlaintextBytes = NotePlaintextBytes;
+    type NoteCiphertextBytes = NoteCiphertextBytes;
+    type CompactNotePlaintextBytes = CompactNotePlaintextBytes;
+    type CompactNoteCiphertextBytes = CompactNoteCiphertextBytes;
 
     fn derive_esk(note: &Self::Note) -> Option<Self::EphemeralSecretKey> {
         NoteEncryptionDomain::<IronwoodVersion>::derive_esk(&note.note)
@@ -700,7 +704,7 @@ impl Domain for ZnsIronwoodDomain {
         NoteEncryptionDomain::<IronwoodVersion>::kdf(secret, ephemeral_key)
     }
 
-    fn note_plaintext_bytes(note: &Self::Note, memo: &Self::Memo) -> NotePlaintextBytes {
+    fn note_plaintext_bytes(note: &Self::Note, memo: &Self::Memo) -> Self::NotePlaintextBytes {
         NoteEncryptionDomain::<IronwoodVersion>::note_plaintext_bytes(&note.note, memo)
     }
 
@@ -736,7 +740,7 @@ impl Domain for ZnsIronwoodDomain {
     fn parse_note_plaintext_without_memo_ivk(
         &self,
         ivk: &Self::IncomingViewingKey,
-        plaintext: &[u8],
+        plaintext: &Self::CompactNotePlaintextBytes,
     ) -> Option<(Self::Note, Self::Recipient)> {
         let (note, recipient) = self
             .ironwood
@@ -753,7 +757,7 @@ impl Domain for ZnsIronwoodDomain {
     fn parse_note_plaintext_without_memo_ovk(
         &self,
         pk_d: &Self::DiversifiedTransmissionKey,
-        plaintext: &NotePlaintextBytes,
+        plaintext: &Self::CompactNotePlaintextBytes,
     ) -> Option<(Self::Note, Self::Recipient)> {
         let (note, recipient) = self
             .ironwood
@@ -767,8 +771,11 @@ impl Domain for ZnsIronwoodDomain {
         ))
     }
 
-    fn extract_memo(&self, plaintext: &NotePlaintextBytes) -> Self::Memo {
-        self.ironwood.extract_memo(plaintext)
+    fn split_plaintext_at_memo(
+        &self,
+        plaintext: &Self::NotePlaintextBytes,
+    ) -> Option<(Self::CompactNotePlaintextBytes, Self::Memo)> {
+        self.ironwood.split_plaintext_at_memo(plaintext)
     }
 
     fn extract_pk_d(out_plaintext: &OutPlaintextBytes) -> Option<Self::DiversifiedTransmissionKey> {
@@ -792,34 +799,42 @@ impl memuse::DynamicUsage for ZnsIronwoodDomain {
 }
 
 #[cfg(feature = "unsafe-zns")]
-impl<T> ShieldedOutput<ZnsIronwoodDomain, ENC_CIPHERTEXT_SIZE> for Action<T> {
+impl<T> ShieldedOutput<ZnsIronwoodDomain> for Action<T> {
     fn ephemeral_key(&self) -> EphemeralKeyBytes {
         EphemeralKeyBytes(self.encrypted_note().epk_bytes)
     }
 
-    fn cmstar_bytes(&self) -> [u8; 32] {
-        self.cmx().to_bytes()
+    fn cmstar(&self) -> &ExtractedNoteCommitment {
+        self.cmx()
     }
 
-    fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] {
-        &self.encrypted_note().enc_ciphertext
+    fn enc_ciphertext(&self) -> Option<&NoteCiphertextBytes> {
+        Some(&self.encrypted_note().enc_ciphertext)
+    }
+
+    fn enc_ciphertext_compact(&self) -> CompactNoteCiphertextBytes {
+        compact_ciphertext(&self.encrypted_note().enc_ciphertext)
     }
 }
 
 // `ShieldedOutput` impls cannot be inherited by delegation (coherence does not
 // carry impls across type substitutions); the impls below mirror the family's.
 #[cfg(feature = "unsafe-zns")]
-impl ShieldedOutput<ZnsIronwoodDomain, COMPACT_NOTE_SIZE> for CompactAction {
+impl ShieldedOutput<ZnsIronwoodDomain> for CompactAction {
     fn ephemeral_key(&self) -> EphemeralKeyBytes {
         EphemeralKeyBytes(self.ephemeral_key.0)
     }
 
-    fn cmstar_bytes(&self) -> [u8; 32] {
-        self.cmx.to_bytes()
+    fn cmstar(&self) -> &ExtractedNoteCommitment {
+        &self.cmx
     }
 
-    fn enc_ciphertext(&self) -> &[u8; COMPACT_NOTE_SIZE] {
-        &self.enc_ciphertext
+    fn enc_ciphertext(&self) -> Option<&NoteCiphertextBytes> {
+        None
+    }
+
+    fn enc_ciphertext_compact(&self) -> CompactNoteCiphertextBytes {
+        NoteBytesData(self.enc_ciphertext)
     }
 }
 
@@ -972,6 +987,8 @@ mod tests {
         BatchDomain, Domain, EphemeralKeyBytes, NoteEncryption,
     };
 
+    #[cfg(feature = "unsafe-zns")]
+    use super::COMPACT_NOTE_SIZE;
     use super::{
         prf_ock_orchard, CompactAction, DomainVersion, IronwoodDomain, IronwoodNoteEncryption,
         IronwoodVersion, NoteBytesData, NoteEncryptionDomain, OrchardDomain, OrchardNoteEncryption,
@@ -993,8 +1010,12 @@ mod tests {
         value::{NoteValue, ValueCommitTrapdoor, ValueCommitment, ValueSum},
         Address, Note,
     };
+
+    /// `rand` 0.10 replaces `rand_core` 0.6's infallible `OsRng` with the
+    /// fallible `SysRng`; unwrapping its error type recovers the old interface.
     #[cfg(feature = "unsafe-zns")]
-    use zcash_note_encryption::COMPACT_NOTE_SIZE;
+    #[allow(non_upper_case_globals)]
+    const OsRng: UnwrapErr<SysRng> = UnwrapErr(SysRng);
 
     fn v3_encrypted_action() -> (
         Action<()>,
@@ -1431,20 +1452,27 @@ mod tests {
 
         // A V2 plaintext with the same rho: identical fields but the wrong
         // lead byte for the Ironwood pool.
+        let mut rng = OsRng;
         let note_v2 = Note::new(
             recipient,
             NoteValue::from_raw(5),
             note.rho(),
             NoteVersion::V2,
-            &mut OsRng,
+            &mut rng,
         );
-        let np_v2 = OrchardDomain::note_plaintext_bytes(&note_v2, &memo);
+        let np_v2 = domain
+            .split_plaintext_at_memo(&OrchardDomain::note_plaintext_bytes(&note_v2, &memo))
+            .expect("a well-formed note plaintext splits at the memo")
+            .0;
         assert!(domain
             .parse_note_plaintext_without_memo_ovk(pk_d, &np_v2)
             .is_none());
 
         // The genuine V3 plaintext parses through the domain.
-        let np_v3 = IronwoodDomain::note_plaintext_bytes(&note, &memo);
+        let np_v3 = domain
+            .split_plaintext_at_memo(&IronwoodDomain::note_plaintext_bytes(&note, &memo))
+            .expect("a well-formed note plaintext splits at the memo")
+            .0;
         let (candidate, parsed_recipient) = domain
             .parse_note_plaintext_without_memo_ovk(pk_d, &np_v3)
             .expect("the V3 plaintext parses");
@@ -1487,7 +1515,7 @@ mod tests {
     /// plaintext's `rseed`: a Name Note.
     #[cfg(feature = "unsafe-zns")]
     fn encrypted_zns_action(
-        rng: &mut OsRng,
+        rng: &mut UnwrapErr<SysRng>,
         recipient: Address,
         ovk: Option<OutgoingViewingKey>,
     ) -> (Action<()>, Note) {

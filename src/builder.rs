@@ -2392,6 +2392,12 @@ mod tests {
         Rng, SeedableRng,
     };
 
+    /// `rand` 0.10 replaces `rand_core` 0.6's infallible `OsRng` with the
+    /// fallible `SysRng`; unwrapping its error type recovers the old interface.
+    #[cfg(feature = "unsafe-zns")]
+    #[allow(non_upper_case_globals)]
+    const OsRng: UnwrapErr<SysRng> = UnwrapErr(SysRng);
+
     use super::{
         bundle, testing, BuildError, Builder, ChangeInfo, MaybeSigned, OutputError, OutputInfo,
         SpendInfo, DEFAULT_MIN_ACTIONS,
