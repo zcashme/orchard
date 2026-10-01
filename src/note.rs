@@ -26,6 +26,8 @@ pub(crate) mod commitment;
 pub mod commitment;
 #[cfg(any(feature = "unstable-voting-circuits", feature = "unsafe-zns"))]
 pub use self::commitment::NoteCommitTrapdoor;
+#[cfg(feature = "unsafe-zns")]
+pub use self::commitment::Psi;
 pub use self::commitment::{ExtractedNoteCommitment, NoteCommitment};
 
 /// Note plaintext version.
@@ -440,6 +442,31 @@ impl Note {
         Nullifier::derive(fvk.nk(), self.rho.0, self.psi(), self.commitment())
     }
 
+    /// Derives this note's commitment from the supplied `(rcm, ψ)` opening
+    /// instead of the note's `rseed`-derived values — the single derivation
+    /// site shared by the ZNS builder and scan paths.
+    ///
+    /// The returned `CtOption` is absent if the commitment is the identity point.
+    pub(crate) fn zns_commitment(
+        &self,
+        rcm: commitment::NoteCommitTrapdoor,
+        psi: commitment::Psi,
+    ) -> CtOption<commitment::NoteCommitment> {
+        let g_d = self.recipient.g_d();
+        let g_d_bytes = g_d.to_bytes();
+        let pk_d = self.recipient.pk_d().inner();
+        let pk_d_bytes = pk_d.to_bytes();
+
+        commitment::NoteCommitment::derive(
+            g_d_bytes,
+            pk_d_bytes,
+            self.value,
+            self.rho.0,
+            psi.inner(),
+            rcm,
+        )
+    }
+
     /// Derives the extracted note commitment (`cmx`) for this note from
     /// caller-supplied `(rcm, ψ)` instead of the values derived from the
     /// note's `rseed`.
@@ -448,9 +475,10 @@ impl Note {
     /// ZcashName commitment parameters rather than from `rseed`. Trial
     /// decryption via
     /// [`ZnsIronwoodDomain`](crate::note_encryption::ZnsIronwoodDomain)
-    /// recovers `(rcm, ψ)` from the decrypted memo; the note authenticates
-    /// exactly when the `cmx` recomputed by this method equals the action's
-    /// `cmx`.
+    /// returns the decrypted note; the caller derives `(rcm, ψ)` from the
+    /// transition σ carried in its memo (whitepaper §3.3) and feeds them to
+    /// this method. The note authenticates exactly when the `cmx` recomputed
+    /// by this method equals the action's `cmx`.
     ///
     /// Returns `None` if the commitment is the identity point; scanners
     /// should reject the note rather than panic.
@@ -458,16 +486,9 @@ impl Note {
     pub fn zns_cmx(
         &self,
         rcm: commitment::NoteCommitTrapdoor,
-        psi: pallas::Base,
+        psi: commitment::Psi,
     ) -> Option<ExtractedNoteCommitment> {
-        let g_d = self.recipient.g_d();
-        let g_d_bytes = g_d.to_bytes();
-        let pk_d = self.recipient.pk_d().inner();
-        let pk_d_bytes = pk_d.to_bytes();
-
-        let cm = Option::<NoteCommitment>::from(NoteCommitment::derive(
-            g_d_bytes, pk_d_bytes, self.value, self.rho.0, psi, rcm,
-        ))?;
+        let cm = Option::<commitment::NoteCommitment>::from(self.zns_commitment(rcm, psi))?;
         Some(ExtractedNoteCommitment::from(cm))
     }
 
@@ -487,17 +508,10 @@ impl Note {
         &self,
         fvk: &FullViewingKey,
         rcm: commitment::NoteCommitTrapdoor,
-        psi: pallas::Base,
+        psi: commitment::Psi,
     ) -> Option<Nullifier> {
-        let g_d = self.recipient.g_d();
-        let g_d_bytes = g_d.to_bytes();
-        let pk_d = self.recipient.pk_d().inner();
-        let pk_d_bytes = pk_d.to_bytes();
-
-        let cm = Option::from(NoteCommitment::derive(
-            g_d_bytes, pk_d_bytes, self.value, self.rho.0, psi, rcm,
-        ))?;
-        Some(Nullifier::derive(fvk.nk(), self.rho.0, psi, cm))
+        let cm = Option::<commitment::NoteCommitment>::from(self.zns_commitment(rcm, psi))?;
+        Some(Nullifier::derive(fvk.nk(), self.rho.0, psi.inner(), cm))
     }
 }
 
@@ -532,6 +546,9 @@ pub mod testing {
     use crate::{
         address::testing::arb_address, note::nullifier::testing::arb_nullifier, value::NoteValue,
     };
+
+    #[cfg(feature = "unsafe-zns")]
+    pub use super::commitment::testing::{arb_note_commit_trapdoor, arb_psi};
 
     use super::{Note, NoteVersion, RandomSeed, Rho};
 
