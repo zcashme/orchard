@@ -1539,7 +1539,7 @@ mod tests {
             &mut *rng,
         );
         let rcm = NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut *rng));
-        let psi = pallas::Base::random(&mut *rng);
+        let psi = crate::note::commitment::Psi::from_inner(pallas::Base::random(&mut *rng));
         let cmx = note
             .zns_cmx(rcm, psi)
             .expect("a random opening yields a non-identity commitment");
