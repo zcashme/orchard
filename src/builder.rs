@@ -189,9 +189,6 @@ pub enum BuildError {
     /// A ZNS Name Note spend or output cannot be represented in a PCZT.
     #[cfg(feature = "unsafe-zns")]
     ZnsPcztUnsupported,
-    /// A note commitment derived while building an output was the identity point.
-    #[cfg(feature = "unsafe-zns")]
-    InvalidNoteCommitment,
     /// The bundle being constructed violated the construction rules for the requested bundle type.
     BundleTypeNotSatisfiable,
     /// Cross-address transfers are disabled for the bundle being constructed, and an
@@ -240,10 +237,6 @@ impl fmt::Display for BuildError {
             #[cfg(feature = "unsafe-zns")]
             ZnsPcztUnsupported => {
                 f.write_str("A ZNS Name Note spend or output cannot be represented in a PCZT")
-            }
-            #[cfg(feature = "unsafe-zns")]
-            InvalidNoteCommitment => {
-                f.write_str("The derived note commitment was the identity point")
             }
             BundleTypeNotSatisfiable => {
                 f.write_str("Bundle structure did not conform to requested bundle type.")
@@ -648,12 +641,6 @@ pub struct OutputInfo {
     /// value, and classifies it as a dummy output it tolerates -- rather than reconstructing the
     /// expected ciphertext and rejecting the mismatch.
     randomized_ciphertext: bool,
-    /// Caller-supplied `(rcm, ψ)` for a ZNS Name Note output. When `None` (the
-    /// default), `build` derives `ψ`/`rcm` from the note's `rseed` as standard.
-    /// When `Some`, `build` uses these values for the note commitment instead,
-    /// while encryption still uses the note's `rseed`-derived `esk`.
-    #[cfg(feature = "unsafe-zns")]
-    zns_override: Option<(NoteCommitTrapdoor, Psi)>,
 }
 
 impl OutputInfo {
@@ -673,8 +660,6 @@ impl OutputInfo {
             note_version,
             rseed: None,
             randomized_ciphertext: false,
-            #[cfg(feature = "unsafe-zns")]
-            zns_override: None,
         }
     }
 
@@ -696,8 +681,6 @@ impl OutputInfo {
             note_version,
             rseed: Some(rseed),
             randomized_ciphertext: false,
-            #[cfg(feature = "unsafe-zns")]
-            zns_override: None,
         }
     }
 
@@ -721,8 +704,6 @@ impl OutputInfo {
             note_version,
             rseed: None,
             randomized_ciphertext: matches!(spent_scope, Scope::External),
-            #[cfg(feature = "unsafe-zns")]
-            zns_override: None,
         }
     }
 
@@ -734,33 +715,6 @@ impl OutputInfo {
         let recipient = fvk.address_at(0u32, Scope::External);
 
         Self::new(None, recipient, NoteValue::ZERO, note_version, [0u8; 512])
-    }
-
-    /// Constructs an `OutputInfo` for a ZcashName Name Note, whose `(rcm, ψ)`
-    /// are supplied directly rather than derived from a `RandomSeed`.
-    ///
-    /// Name Notes cannot be represented in PCZTs; `build_for_pczt` rejects
-    /// bundles containing them.
-    #[cfg(feature = "unsafe-zns")]
-    pub fn new_zns(
-        ovk: Option<OutgoingViewingKey>,
-        recipient: Address,
-        value: NoteValue,
-        note_version: NoteVersion,
-        memo: [u8; 512],
-        rcm: NoteCommitTrapdoor,
-        psi: Psi,
-    ) -> Self {
-        Self {
-            ovk,
-            recipient,
-            value,
-            memo,
-            note_version,
-            rseed: None,
-            randomized_ciphertext: false,
-            zns_override: Some((rcm, psi)),
-        }
     }
 
     /// Builds the output half of an action.
@@ -803,32 +757,8 @@ impl OutputInfo {
             }
         };
 
-        // Resolve ψ/rcm: from the ZNS override if set, else from rseed.
-        #[cfg(feature = "unsafe-zns")]
-        let (psi, rcm) = match self.zns_override {
-            Some((rcm, psi)) => (psi, rcm),
-            None => (Psi::from_inner(note.psi()), note.rcm()),
-        };
-        #[cfg(not(feature = "unsafe-zns"))]
         let (psi, rcm) = (Psi::from_inner(note.psi()), note.rcm());
-
-        // Invariant: the resolved opening yields a non-identity commitment
-        // (as with `Note::commitment` for `rseed`-derived openings). A ZNS
-        // override committing to the identity would produce an on-chain
-        // invalid `cmx`; return a build error instead of panicking.
-        let cm_new = note.zns_commitment(rcm, psi);
-        #[cfg(feature = "unsafe-zns")]
-        let cm_new = if self.zns_override.is_some() {
-            Option::<crate::note::NoteCommitment>::from(cm_new)
-                .ok_or(BuildError::InvalidNoteCommitment)?
-        } else {
-            // `Note::new` and `Note::from_parts` checked the rseed-derived commitment at
-            // construction.
-            cm_new.unwrap()
-        };
-        #[cfg(not(feature = "unsafe-zns"))]
-        let cm_new = cm_new.unwrap();
-        let cmx = cm_new.into();
+        let cmx = note.commitment().into();
 
         // The Orchard and Ironwood encryptor aliases share encryption behavior;
         // `Note::version()` selects the note plaintext lead byte.
@@ -858,39 +788,6 @@ impl OutputInfo {
         Ok((note, psi, rcm, cmx, encrypted_note))
     }
 
-    #[cfg(feature = "unsafe-zns")]
-    fn into_pczt(
-        self,
-        cv_net: &ValueCommitment,
-        nf_old: Nullifier,
-        rng: impl Rng,
-    ) -> Result<crate::pczt::Output, BuildError> {
-        if self.zns_override.is_some() {
-            // A Name Note cannot be represented in a PCZT: the Prover role
-            // re-derives its witness from the note's `rseed`, which cannot
-            // reproduce the ZNS commitment. Reject rather than emit an
-            // unprovable PCZT.
-            return Err(BuildError::ZnsPcztUnsupported);
-        }
-        let (note, _psi, _rcm, cmx, encrypted_note) = self.build(cv_net, nf_old, rng)?;
-
-        Ok(crate::pczt::Output {
-            cmx,
-            note_version: self.note_version,
-            encrypted_note,
-            recipient: Some(self.recipient),
-            value: Some(self.value),
-            rseed: Some(*note.rseed()),
-            // TODO: Extract ock from the encryptor and save it so
-            // Signers can check `out_ciphertext`.
-            ock: None,
-            zip32_derivation: None,
-            user_address: None,
-            proprietary: BTreeMap::new(),
-        })
-    }
-
-    #[cfg(not(feature = "unsafe-zns"))]
     fn into_pczt(
         self,
         cv_net: &ValueCommitment,
@@ -1367,42 +1264,6 @@ impl Builder {
             value,
             self.note_version(),
             memo,
-        ));
-
-        Ok(())
-    }
-
-    /// Adds a ZcashName Name Note output, whose `(rcm, ψ)` are supplied directly
-    /// (typically `BLAKE2b("ZcashName/v1" || …)` computed by the Registry)
-    /// rather than derived from a `RandomSeed`. Usually a self-send of value `0`.
-    ///
-    /// Name Notes cannot be represented in PCZTs; `build_for_pczt` rejects
-    /// bundles containing them.
-    #[cfg(feature = "unsafe-zns")]
-    pub fn add_zns_output(
-        &mut self,
-        ovk: Option<OutgoingViewingKey>,
-        recipient: Address,
-        value: NoteValue,
-        memo: [u8; 512],
-        rcm: NoteCommitTrapdoor,
-        psi: Psi,
-    ) -> Result<(), OutputError> {
-        if !self.flags.outputs_enabled() {
-            return Err(OutputError::OutputsDisabled);
-        }
-        if !self.flags.cross_address_enabled() {
-            return Err(OutputError::CrossAddressDisabled);
-        }
-
-        self.outputs.push(OutputInfo::new_zns(
-            ovk,
-            recipient,
-            value,
-            self.note_version(),
-            memo,
-            rcm,
-            psi,
         ));
 
         Ok(())
@@ -3776,76 +3637,6 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(8))]
 
-        /// A ZNS mint: a value-0 self-send whose `(rcm, ψ)` are supplied
-        /// directly rather than derived from `rseed` must commit to exactly
-        /// the supplied opening, and produce a proof that verifies.
-        #[test]
-        fn zns_output_bundle_verifies(
-            sk in crate::keys::testing::arb_spending_key(),
-            rcm in crate::note::testing::arb_note_commit_trapdoor(),
-            psi in crate::note::testing::arb_psi(),
-            build_seed in prop::array::uniform32(prop::num::u8::ANY),
-        ) {
-            use crate::{
-                bundle::{BundleVersion, Flags},
-                circuit::{ProvingKey, VerifyingKey},
-                note::{ExtractedNoteCommitment, NoteCommitment},
-            };
-
-            let bundle_version = BundleVersion::ironwood_v3();
-            let circuit_version = bundle_version.circuit_version();
-
-            let pk = ProvingKey::build(circuit_version);
-            let vk = VerifyingKey::build(circuit_version);
-
-            let fvk = FullViewingKey::from(&sk);
-            let addr_reg = fvk.address_at(0u32, Scope::External);
-
-            let mut rng = StdRng::from_seed(build_seed);
-            let mut builder = Builder::new(
-                BundleType::DEFAULT,
-                bundle_version,
-                Flags::ENABLED,
-                EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-            )
-            .unwrap();
-
-            builder
-                .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
-                .unwrap();
-            let balance: i64 = builder.value_balance().unwrap();
-            prop_assert_eq!(balance, 0);
-
-            let (bundle, metadata) = builder.build(&mut rng).unwrap().unwrap();
-
-            // The published cmx must derive from exactly the supplied (rcm, ψ)
-            // — never a fallback to the note's rseed opening.
-            let action = &bundle.actions()[metadata.output_action_index(0).unwrap()];
-            let (g_d, pk_d) = addr_reg.zns_commitment_keys();
-            let expected_cmx = ExtractedNoteCommitment::from(
-                NoteCommitment::derive(
-                    g_d,
-                    pk_d,
-                    NoteValue::ZERO,
-                    action.rho().into_inner(),
-                    psi.inner(),
-                    rcm,
-                )
-                .unwrap(),
-            );
-            prop_assert_eq!(action.cmx().to_bytes(), expected_cmx.to_bytes());
-
-            let bundle: Bundle<Authorized, i64> = bundle
-                .create_proof(&pk, &mut rng)
-                .unwrap()
-                .prepare(&mut rng, [0; 32])
-                .finalize()
-                .unwrap();
-            prop_assert_eq!(bundle.value_balance(), &0);
-
-            bundle.verify_proof(&vk).unwrap();
-        }
-
         /// A zero-valued Name Note still has to authenticate its supplied opening
         /// against the builder anchor.
         #[test]
@@ -3884,184 +3675,6 @@ mod tests {
                 Err(SpendError::AnchorMismatch)
             );
         }
-
-        /// A ZNS update: spend a prior (value-0) Name Note and mint the next
-        /// one in the chain, both with caller-supplied `(rcm, ψ)`. The
-        /// published `nf_old` must derive from exactly the supplied
-        /// predecessor opening — never the spent note's rseed opening — and
-        /// the signed bundle must verify.
-        #[test]
-        fn zns_spend_bundle_verifies(
-            sk in crate::keys::testing::arb_spending_key(),
-            rcm_old in crate::note::testing::arb_note_commit_trapdoor(),
-            psi_old in crate::note::testing::arb_psi(),
-            rcm_new in crate::note::testing::arb_note_commit_trapdoor(),
-            psi_new in crate::note::testing::arb_psi(),
-            build_seed in prop::array::uniform32(prop::num::u8::ANY),
-        ) {
-            use crate::{
-                bundle::{BundleVersion, Flags},
-                circuit::{ProvingKey, VerifyingKey},
-                keys::SpendAuthorizingKey,
-                note::NoteCommitment,
-            };
-
-            let bundle_version = BundleVersion::ironwood_v3();
-            let circuit_version = bundle_version.circuit_version();
-            let note_version = bundle_version.note_version();
-
-            let pk = ProvingKey::build(circuit_version);
-            let vk = VerifyingKey::build(circuit_version);
-
-            let fvk = FullViewingKey::from(&sk);
-            let addr_reg = fvk.address_at(0u32, Scope::External);
-
-            let mut rng = StdRng::from_seed(build_seed);
-
-            let old_rho = Rho::from_nf_old(Nullifier::dummy(&mut rng));
-            let old_note = Note::new(
-                addr_reg,
-                NoteValue::ZERO,
-                old_rho,
-                note_version,
-                &mut rng,
-            );
-
-            // The expected nullifier, derived independently of the Builder
-            // from the supplied predecessor opening.
-            let (g_d, pk_d) = addr_reg.zns_commitment_keys();
-            let cm_old = NoteCommitment::derive(
-                g_d,
-                pk_d,
-                NoteValue::ZERO,
-                old_rho.into_inner(),
-                psi_old.inner(),
-                rcm_old,
-            )
-            .unwrap();
-            let old_merkle_path = MerklePath::dummy(&mut rng);
-            let old_anchor = old_merkle_path.root(cm_old.clone().into());
-            let expected_nf = Nullifier::derive(fvk.nk(), old_rho.into_inner(), psi_old.inner(), cm_old);
-
-            let mut builder = Builder::new(
-                BundleType::DEFAULT,
-                bundle_version,
-                Flags::ENABLED,
-                old_anchor,
-            )
-            .unwrap();
-
-            builder
-                .add_zns_spend(
-                    fvk.clone(),
-                    old_note,
-                    old_merkle_path,
-                    rcm_old,
-                    psi_old,
-                )
-                .unwrap();
-            builder
-                .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm_new, psi_new)
-                .unwrap();
-
-            let balance: i64 = builder.value_balance().unwrap();
-            prop_assert_eq!(balance, 0);
-
-            let (bundle, metadata) = builder.build(&mut rng).unwrap().unwrap();
-
-            // The published nf_old must derive from exactly the supplied
-            // predecessor opening — never the note's rseed opening.
-            let action = &bundle.actions()[metadata.spend_action_index(0).unwrap()];
-            prop_assert_eq!(action.nullifier().to_bytes(), expected_nf.to_bytes());
-
-            let ask = SpendAuthorizingKey::from(&sk);
-            let bundle: Bundle<Authorized, i64> = bundle
-                .create_proof(&pk, &mut rng)
-                .unwrap()
-                .prepare(&mut rng, [0; 32])
-                .sign(&mut rng, &ask)
-                .finalize()
-                .unwrap();
-            prop_assert_eq!(bundle.value_balance(), &0);
-
-            bundle.verify_proof(&vk).unwrap();
-        }
-    }
-
-    /// A Name Note's on-chain `cmx` is derived from ZcashName data carried in
-    /// the encrypted memo, not from the note's `rseed`, so standard Ironwood
-    /// trial decryption cannot see the note, and `ZnsIronwoodDomain` itself
-    /// performs no commitment check (`cmstar` passes the action's `cmx`
-    /// through). The caller is therefore the security boundary:
-    /// [`Note::zns_cmx`] fed the true `(rcm, ψ)` must authenticate the
-    /// decrypted note against the published `cmx`, and a wrong `ψ` must be
-    /// rejected.
-    #[cfg(feature = "unsafe-zns")]
-    #[test]
-    fn zns_output_note_verifies() {
-        use group::ff::Field;
-        use pasta_curves::pallas;
-
-        use crate::note_encryption::{IronwoodDomain, ZnsIronwoodDomain};
-
-        let mut rng = OsRng;
-        let sk = SpendingKey::random(&mut rng);
-        let fvk = FullViewingKey::from(&sk);
-        let addr_reg = fvk.address_at(0u32, Scope::External);
-        let ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
-
-        let rcm = NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
-        let psi = Psi::from_inner(pallas::Base::random(&mut rng));
-
-        let mut builder = Builder::new(
-            BundleType::DEFAULT,
-            BundleVersion::ironwood_v3(),
-            Flags::ENABLED,
-            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-        )
-        .unwrap();
-        builder
-            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
-            .unwrap();
-
-        let (bundle, bundle_meta) = builder.build::<i64>(&mut rng).unwrap().unwrap();
-        let action = &bundle.actions()[bundle_meta.output_action_index(0).unwrap()];
-
-        // The note is genuinely a ZNS note: standard trial decryption, whose
-        // `cmstar` re-derives the commitment from `rseed`, cannot see it.
-        // (The plaintext itself decrypts, so this can only be the cm* check.)
-        assert!(try_note_decryption(&IronwoodDomain::for_action(action), &ivk, action).is_none());
-
-        // The candidate carries the decrypted note and the published cmx;
-        // the caller verifies the ZNS binding separately.
-        let (candidate, recipient, memo) = ZnsIronwoodDomain::for_action(action)
-            .try_decrypt(action, &ivk)
-            .expect("a Name Note decrypts");
-        let note = candidate.note();
-        assert_eq!(recipient, addr_reg);
-        assert_eq!(memo, [0u8; 512]);
-        assert_eq!(note.value(), NoteValue::ZERO);
-        assert_eq!(note.rho(), action.rho());
-        // Verify the ZNS commitment binding: the true (rcm, ψ) must reproduce
-        // the published cmx.
-        assert_eq!(
-            note.zns_cmx(rcm, psi).expect("zns_cmx succeeds"),
-            *candidate.cmx()
-        );
-
-        // A wrong ψ does not reproduce the published cmx: the domain returns
-        // the candidate, but the binding check rejects it.
-        let wrong_psi = Psi::from_inner(psi.inner() + pallas::Base::one());
-        let (candidate, _, _) = ZnsIronwoodDomain::for_action(action)
-            .try_decrypt(action, &ivk)
-            .expect("decryption succeeds regardless of ψ");
-        assert_ne!(
-            candidate
-                .note()
-                .zns_cmx(rcm, wrong_psi)
-                .expect("zns_cmx succeeds"),
-            *candidate.cmx()
-        );
     }
 
     /// A Name Note's on-chain nullifier is derived from its ZcashName
@@ -4152,38 +3765,6 @@ mod tests {
         .unwrap();
         builder
             .add_zns_spend(fvk, old_note, merkle_path, rcm, psi)
-            .unwrap();
-
-        assert!(matches!(
-            builder.build_for_pczt(&mut rng),
-            Err(BuildError::ZnsPcztUnsupported)
-        ));
-    }
-
-    /// A ZNS Name Note output cannot be represented in a PCZT.
-    #[cfg(feature = "unsafe-zns")]
-    #[test]
-    fn zns_output_rejects_pczt() {
-        use group::ff::Field;
-        use pasta_curves::pallas;
-
-        let mut rng = OsRng;
-        let sk = SpendingKey::random(&mut rng);
-        let fvk = FullViewingKey::from(&sk);
-        let addr_reg = fvk.address_at(0u32, Scope::External);
-
-        let rcm = NoteCommitTrapdoor::from_inner(pallas::Scalar::random(&mut rng));
-        let psi = Psi::from_inner(pallas::Base::random(&mut rng));
-
-        let mut builder = Builder::new(
-            BundleType::DEFAULT,
-            BundleVersion::ironwood_v3(),
-            Flags::ENABLED,
-            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-        )
-        .unwrap();
-        builder
-            .add_zns_output(None, addr_reg, NoteValue::ZERO, [0u8; 512], rcm, psi)
             .unwrap();
 
         assert!(matches!(
