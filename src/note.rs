@@ -234,6 +234,28 @@ impl RandomSeed {
     }
 }
 
+/// The byte encoding of a note's [`RandomSeed`], not yet validated for a [`Rho`].
+///
+/// A [`RandomSeed`] is only valid relative to the `rho` of the note it belongs to, so a
+/// seed that is chosen before that `rho` is known is held as this type until it is.
+#[derive(Copy, Clone, Debug)]
+#[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
+pub(crate) struct RandomSeedBytes([u8; 32]);
+
+impl RandomSeedBytes {
+    /// Reads the byte encoding of a note's random seed from a byte array.
+    #[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
+    pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
+        RandomSeedBytes(bytes)
+    }
+
+    /// Returns the byte array corresponding to this seed.
+    #[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 /// A discrete amount of funds received by an address.
 #[derive(Debug, Copy, Clone)]
 pub struct Note {
@@ -550,12 +572,19 @@ pub mod testing {
     #[cfg(feature = "unsafe-zns")]
     pub use super::commitment::testing::{arb_note_commit_trapdoor, arb_psi};
 
-    use super::{Note, NoteVersion, RandomSeed, Rho};
+    use super::{Note, NoteVersion, RandomSeed, RandomSeedBytes, Rho};
 
     prop_compose! {
         /// Generate an arbitrary random seed
         pub(crate) fn arb_rseed()(elems in prop::array::uniform32(prop::num::u8::ANY)) -> RandomSeed {
             RandomSeed(elems)
+        }
+    }
+
+    prop_compose! {
+        /// Generate the byte encoding of an arbitrary random seed
+        pub(crate) fn arb_rseed_bytes()(elems in prop::array::uniform32(prop::num::u8::ANY)) -> RandomSeedBytes {
+            RandomSeedBytes(elems)
         }
     }
 
