@@ -100,7 +100,6 @@ bench = false
 default = ["circuit", "multicore", "std", "zeroize"]
 std = ["corez/std", "group/wnaf-memuse", "reddsa/std"]
 circuit = ["dep:halo2_gadgets", "dep:halo2_proofs", "dep:tracing", "std"]
-unstable-bound-notes = []
 unstable-frost = []
 unstable-voting-circuits = []
 # ZNS extensions (this fork)

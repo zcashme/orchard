@@ -239,18 +239,18 @@ impl RandomSeed {
 /// A [`RandomSeed`] is only valid relative to the `rho` of the note it belongs to, so a
 /// seed that is chosen before that `rho` is known is held as this type until it is.
 #[derive(Copy, Clone, Debug)]
-#[cfg_attr(feature = "unstable-bound-notes", visibility::make(pub))]
+#[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
 pub(crate) struct RandomSeedBytes([u8; 32]);
 
 impl RandomSeedBytes {
     /// Reads the byte encoding of a note's random seed from a byte array.
-    #[cfg_attr(feature = "unstable-bound-notes", visibility::make(pub))]
+    #[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
     pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
         RandomSeedBytes(bytes)
     }
 
     /// Returns the byte array corresponding to this seed.
-    #[cfg_attr(feature = "unstable-bound-notes", visibility::make(pub))]
+    #[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }

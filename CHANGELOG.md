@@ -5,12 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - `orchard::builder::BuildError::{InvalidRandomSeed, InvalidOutputNote}`
-- `unstable-bound-notes` feature flag. The following APIs have been made
-  available behind the `unstable-bound-notes` feature flag, and are not covered
-  by the crate's semver stability guarantees and may change in any future
-  release:
-  - `orchard::builder::Builder::add_output_with_rseed`
-  - `orchard::note::RandomSeedBytes`
+- `orchard::builder::Builder::add_output_with_rseed` and
+  `orchard::note::RandomSeedBytes` (unsafe-zns): build an output from a
+  caller-provided `rseed`, for bound Name Notes.
 - `note::Psi` (unsafe-zns): the typed ZNS commitment input ψ, base-field
   counterpart of `NoteCommitTrapdoor`. ZNS public APIs (`Builder::add_zns_spend`,
   `Builder::add_zns_output`, `SpendInfo::new_zns`, `OutputInfo::new_zns`,

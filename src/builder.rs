@@ -1446,7 +1446,7 @@ impl Builder {
     ///
     /// [ZIP 212]: https://zips.z.cash/zip-0212
     /// [ZIP 2005]: https://zips.z.cash/zip-2005
-    #[cfg_attr(feature = "unstable-bound-notes", visibility::make(pub))]
+    #[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
     pub(crate) fn add_output_with_rseed(
         &mut self,
         ovk: Option<OutgoingViewingKey>,
