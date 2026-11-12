@@ -9,14 +9,8 @@ All notable changes to this project will be documented in this file.
   `orchard::note::RandomSeedBytes` (unsafe-zns): build an output from a
   caller-provided `rseed`, for bound Name Notes.
 - `note::Psi` (unsafe-zns): the typed ZNS commitment input ψ, base-field
-  counterpart of `NoteCommitTrapdoor`. ZNS public APIs (`Builder::add_zns_spend`,
-  `SpendInfo::new_zns`, `Note::zns_cmx`, `Note::zns_nullifier`) now take `Psi`
-  instead of a bare `pallas::Base`.
-- PCZT guard (unsafe-zns): `build_for_pczt` rejects bundles containing Name Note
-  spends (`BuildError::ZnsPcztUnsupported`) — the PCZT Prover re-derives
-  witnesses from the note's `rseed` and cannot prove ZNS commitments.
-- Identity commitments return `SpendError::InvalidNoteCommitment` when adding a ZNS
-  spend; the variant is available only with `unsafe-zns`.
+  counterpart of `NoteCommitTrapdoor`. ZNS public APIs (`Note::zns_cmx`,
+  `Note::zns_nullifier`) now take `Psi` instead of a bare `pallas::Base`.
 - `note::testing::{arb_psi, arb_note_commit_trapdoor}` proptest
   strategies (unsafe-zns, test-dependencies).
 - Published to crates.io as `zns-orchard` (the upstream `orchard` name is
@@ -41,9 +35,6 @@ All notable changes to this project will be documented in this file.
   convenience; the fork separates them.
 
   New API (all behind `unsafe-zns`):
-  - `Builder::add_zns_spend(fvk, note, merkle_path, rcm, psi)` — spend a Name
-    Note with caller-supplied commitment parameters.
-  - `SpendInfo::new_zns(fvk, note, merkle_path, rcm, psi)` — low-level constructor.
   - `NoteCommitTrapdoor::from_inner`, `from_bytes`, `to_bytes`, `ConstantTimeEq`,
     `PartialEq`, `Eq`.
   - `Address::zns_commitment_keys()` — raw `(g_d, pk_d)` bytes for external
@@ -72,20 +63,14 @@ All notable changes to this project will be documented in this file.
     note and published `cmx` together.
 
 ### Changed
-- Single ZNS derivation site: `Note::zns_commitment`; identity-commitment
-  openings return an error during spend construction.
-  `SpendInfo::commitment` documents the non-identity invariant.
-- `Builder::add_zns_spend` documentation corrected: the anchor check
-  authenticates the commitment derived from the supplied `(rcm, ψ)` against the
-  bundle anchor (previously described as "trivially satisfied").
+- Single ZNS derivation site: `Note::zns_commitment`.
 - `Address::zns_commitment_keys` documents the `(g_d, pk_d)` order expected by
   `zns_verify::note_commitment_cmx`.
 
 - `SpendInfo` now carries pre-resolved `psi` and `rcm` as fields, derived from
   `note.psi()` / `note.rcm()` at construction time. The circuit, nullifier, and
-  anchor check read these fields instead of delegating to `Note`. For standard
-  notes the behavior is identical; for ZNS notes the fields carry caller-supplied
-  values.
+  anchor check read these fields instead of delegating to `Note`; the behavior is
+  identical.
 - `OutputInfo::build()` now returns a 5-tuple `(Note, ψ, rcm, cmx, ciphertext)`
   instead of a 3-tuple, so the circuit receives the resolved commitment
   parameters for the output side.
