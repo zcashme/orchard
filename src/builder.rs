@@ -16,7 +16,10 @@ use crate::{
         FullViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey, SpendValidatingKey,
         SpendingKey,
     },
-    note::{ExtractedNoteCommitment, Note, NoteVersion, Nullifier, Rho, TransmittedNoteCiphertext},
+    note::{
+        ExtractedNoteCommitment, Note, NoteVersion, Nullifier, RandomSeed, RandomSeedBytes, Rho,
+        TransmittedNoteCiphertext,
+    },
     note_encryption::{NoteBytesData, OrchardNoteEncryption, ENC_CIPHERTEXT_SIZE},
     primitives::redpallas::{self, Binding, SpendAuth},
     tree::{Anchor, MerklePath},
@@ -210,6 +213,12 @@ pub enum BuildError {
     /// digest — and hence every signature — excludes the bundle anchor (the V6 formats;
     /// [ZIP 374](https://zips.z.cash/zip-0374)).
     AnchorDeferralUnsupported,
+    /// An invalid `rseed` was provided for an output: it does not yield a valid ephemeral
+    /// secret key for the action the output was placed in.
+    InvalidRandomSeed,
+    /// The components of an output with a provided `rseed` do not produce a valid note
+    /// commitment.
+    InvalidOutputNote,
 }
 
 impl fmt::Display for BuildError {
@@ -267,6 +276,12 @@ impl fmt::Display for BuildError {
             AnchorDeferralUnsupported => f.write_str(
                 "Anchors can be deferred only for bundle formats whose txid digest \
                  excludes the anchor.",
+            ),
+            InvalidRandomSeed => f.write_str(
+                "An output's provided rseed is invalid for the action the output was placed in.",
+            ),
+            InvalidOutputNote => f.write_str(
+                "An output with a provided rseed does not produce a valid note commitment.",
             ),
         }
     }
@@ -613,6 +628,13 @@ pub struct OutputInfo {
     value: NoteValue,
     memo: [u8; 512],
     note_version: NoteVersion,
+    /// When set, the output's note is constructed from this `rseed` instead of from a
+    /// freshly sampled one.
+    ///
+    /// The seed is held unvalidated because a [`RandomSeed`] is only valid relative to the
+    /// note's `rho`, which is not known until the output has been placed in an action;
+    /// `build` validates it there.
+    rseed: Option<RandomSeedBytes>,
     /// When set, `build` fills `enc_ciphertext` with random bytes instead of encrypting the
     /// note to `recipient`. This is used only for the zero-valued output that a builder with
     /// cross-address actions disabled pairs with a real external-scope spend, which is addressed
@@ -649,6 +671,30 @@ impl OutputInfo {
             value,
             memo,
             note_version,
+            rseed: None,
+            randomized_ciphertext: false,
+            #[cfg(feature = "unsafe-zns")]
+            zns_override: None,
+        }
+    }
+
+    /// Constructs an output whose note is built from the given `rseed` instead of from a
+    /// freshly sampled one (see [`Builder::add_output_with_rseed`]).
+    fn new_with_rseed(
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        note_version: NoteVersion,
+        memo: [u8; 512],
+        rseed: RandomSeedBytes,
+    ) -> Self {
+        Self {
+            ovk,
+            recipient,
+            value,
+            memo,
+            note_version,
+            rseed: Some(rseed),
             randomized_ciphertext: false,
             #[cfg(feature = "unsafe-zns")]
             zns_override: None,
@@ -673,6 +719,7 @@ impl OutputInfo {
             value: NoteValue::ZERO,
             memo: [0u8; 512],
             note_version,
+            rseed: None,
             randomized_ciphertext: matches!(spent_scope, Scope::External),
             #[cfg(feature = "unsafe-zns")]
             zns_override: None,
@@ -710,6 +757,7 @@ impl OutputInfo {
             value,
             memo,
             note_version,
+            rseed: None,
             randomized_ciphertext: false,
             zns_override: Some((rcm, psi)),
         }
@@ -736,7 +784,24 @@ impl OutputInfo {
         BuildError,
     > {
         let rho = Rho::from_nf_old(nf_old);
-        let note = Note::new(self.recipient, self.value, rho, self.note_version, &mut rng);
+        // A provided `rseed` is only valid relative to this action's `rho`, and cannot be
+        // resampled, so the two conditions that `Note::new` retries past are errors here.
+        let rseed = self
+            .rseed
+            .map(|rseed| {
+                RandomSeed::from_bytes(*rseed.as_bytes(), &rho)
+                    .into_option()
+                    .ok_or(BuildError::InvalidRandomSeed)
+            })
+            .transpose()?;
+        let note = match rseed {
+            None => Note::new(self.recipient, self.value, rho, self.note_version, &mut rng),
+            Some(rseed) => {
+                Note::from_parts(self.recipient, self.value, rho, rseed, self.note_version)
+                    .into_option()
+                    .ok_or(BuildError::InvalidOutputNote)?
+            }
+        };
 
         // Resolve ψ/rcm: from the ZNS override if set, else from rseed.
         #[cfg(feature = "unsafe-zns")]
@@ -757,7 +822,8 @@ impl OutputInfo {
             Option::<crate::note::NoteCommitment>::from(cm_new)
                 .ok_or(BuildError::InvalidNoteCommitment)?
         } else {
-            // `Note::new` checked the rseed-derived commitment at construction.
+            // `Note::new` and `Note::from_parts` checked the rseed-derived commitment at
+            // construction.
             cm_new.unwrap()
         };
         #[cfg(not(feature = "unsafe-zns"))]
@@ -1337,6 +1403,72 @@ impl Builder {
             memo,
             rcm,
             psi,
+        ));
+
+        Ok(())
+    }
+
+    /// Adds an address which will receive funds in this transaction, in a note that is
+    /// constructed from the given `rseed` instead of from a freshly sampled one.
+    ///
+    /// The note is constructed from `rseed` the same way a recipient reconstructs it from
+    /// the decrypted note plaintext: $\mathsf{esk}$, $\psi$ and $\mathsf{rcm}$ are derived
+    /// from `rseed` as [ZIP 212] and [ZIP 2005] specify for the bundle's note plaintext
+    /// lead byte. The output is therefore an ordinary one to its recipient and to the
+    /// holder of `ovk`, and a PCZT carries it in its existing `rseed` field. What it adds
+    /// is that the note commitment is a function of a seed the caller chose.
+    ///
+    /// # Caveats
+    ///
+    /// This departs from the requirement of [ZIP 212] that the sender samples `rseed`
+    /// uniformly at random, and so gives up what that randomness provides:
+    ///
+    /// - Anyone who knows `rseed` learns what the sender of the note knows. From `rseed`
+    ///   and the nullifier revealed by the output's action they can derive
+    ///   $\mathsf{esk}$, and with the recipient's address decrypt the note and its memo;
+    ///   this holds even when `ovk` is `None`. A caller that needs the note to stay
+    ///   private MUST derive `rseed` from a secret with at least 256 bits of entropy.
+    /// - The note encryption key is a function of `rseed`, the recipient, and the
+    ///   nullifier revealed by the output's action. Two outputs that agree on all three
+    ///   and differ in value or memo encrypt two plaintexts under one key. The nullifier
+    ///   can only agree if both actions spend the same note, as when a transaction is
+    ///   built again; a caller MUST NOT then change the value or the memo.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Builder::add_output`].
+    ///
+    /// Whether `rseed` yields a valid note depends on the action the output is placed in,
+    /// so it is checked when the bundle is built: [`Builder::build`] and
+    /// [`Builder::build_for_pczt`] return [`BuildError::InvalidRandomSeed`] if `rseed`
+    /// does not yield a valid $\mathsf{esk}$, or [`BuildError::InvalidOutputNote`] if
+    /// the note has no valid commitment. Each occurs with negligible probability.
+    ///
+    /// [ZIP 212]: https://zips.z.cash/zip-0212
+    /// [ZIP 2005]: https://zips.z.cash/zip-2005
+    #[cfg_attr(feature = "unstable-bound-notes", visibility::make(pub))]
+    pub(crate) fn add_output_with_rseed(
+        &mut self,
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        memo: [u8; 512],
+        rseed: RandomSeedBytes,
+    ) -> Result<(), OutputError> {
+        if !self.flags.outputs_enabled() {
+            return Err(OutputError::OutputsDisabled);
+        }
+        if !self.flags.cross_address_enabled() {
+            return Err(OutputError::CrossAddressDisabled);
+        }
+
+        self.outputs.push(OutputInfo::new_with_rseed(
+            ovk,
+            recipient,
+            value,
+            self.note_version(),
+            memo,
+            rseed,
         ));
 
         Ok(())
