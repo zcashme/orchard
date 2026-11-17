@@ -2,4 +2,3 @@
 **/*.rs.bk
 .vscode
 action-circuit-layout.png
-.pi/

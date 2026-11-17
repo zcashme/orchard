@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to Rust's notion of
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [Unreleased]
 
 ### Added
@@ -11,12 +15,8 @@ All notable changes to this project will be documented in this file.
 - Published to crates.io as `zns-orchard` (the upstream `orchard` name is
   taken). The lib target is still named `orchard`, so downstream imports are
   unchanged.
-- Tag `orchard-name-v0.15.5` marks the last commit whose *package* name is
-  `orchard`; consumers needing a `[patch.crates-io]` source can pin to it:
-  `orchard = { git = "https://github.com/zcashme/orchard", tag = "orchard-name-v0.15.5" }`
 - `unsafe-zns` feature flag, under which `Builder::add_output_with_rseed` and
   `note::RandomSeedBytes` are public.
-
 
 ## [0.16.0] - 2026-09-29
 
@@ -925,7 +925,3 @@ Existing callers keep the current behavior by constructing bundles with
 
 ## [0.1.0-beta.1] - 2021-12-17
 Initial release!
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to Rust's notion of
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
