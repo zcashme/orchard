@@ -24,10 +24,8 @@ const ZIP2005_ORCHARD_QR_RCM_DOMAIN_SEPARATOR: u8 = 0x0B;
 pub(crate) mod commitment;
 #[cfg(feature = "unstable-voting-circuits")]
 pub mod commitment;
-#[cfg(any(feature = "unstable-voting-circuits", feature = "unsafe-zns"))]
+#[cfg(feature = "unstable-voting-circuits")]
 pub use self::commitment::NoteCommitTrapdoor;
-#[cfg(feature = "unsafe-zns")]
-pub use self::commitment::Psi;
 pub use self::commitment::{ExtractedNoteCommitment, NoteCommitment};
 
 /// Note plaintext version.
@@ -463,31 +461,6 @@ impl Note {
     pub fn nullifier(&self, fvk: &FullViewingKey) -> Nullifier {
         Nullifier::derive(fvk.nk(), self.rho.0, self.psi(), self.commitment())
     }
-
-    /// Derives this note's commitment from the supplied `(rcm, ψ)` opening
-    /// instead of the note's `rseed`-derived values — the single derivation
-    /// site shared by the ZNS builder and scan paths.
-    ///
-    /// The returned `CtOption` is absent if the commitment is the identity point.
-    pub(crate) fn zns_commitment(
-        &self,
-        rcm: commitment::NoteCommitTrapdoor,
-        psi: commitment::Psi,
-    ) -> CtOption<commitment::NoteCommitment> {
-        let g_d = self.recipient.g_d();
-        let g_d_bytes = g_d.to_bytes();
-        let pk_d = self.recipient.pk_d().inner();
-        let pk_d_bytes = pk_d.to_bytes();
-
-        commitment::NoteCommitment::derive(
-            g_d_bytes,
-            pk_d_bytes,
-            self.value,
-            self.rho.0,
-            psi.inner(),
-            rcm,
-        )
-    }
 }
 
 /// An encrypted note.
@@ -521,9 +494,6 @@ pub mod testing {
     use crate::{
         address::testing::arb_address, note::nullifier::testing::arb_nullifier, value::NoteValue,
     };
-
-    #[cfg(feature = "unsafe-zns")]
-    pub use super::commitment::testing::{arb_note_commit_trapdoor, arb_psi};
 
     use super::{Note, NoteVersion, RandomSeed, RandomSeedBytes, Rho};
 
