@@ -9,8 +9,7 @@ All notable changes to this project will be documented in this file.
   `orchard::note::RandomSeedBytes` (unsafe-zns): build an output from a
   caller-provided `rseed`, for bound Name Notes.
 - `note::Psi` (unsafe-zns): the typed ZNS commitment input ψ, base-field
-  counterpart of `NoteCommitTrapdoor`. ZNS public APIs (`Note::zns_cmx`,
-  `Note::zns_nullifier`) now take `Psi` instead of a bare `pallas::Base`.
+  counterpart of `NoteCommitTrapdoor`.
 - `note::testing::{arb_psi, arb_note_commit_trapdoor}` proptest
   strategies (unsafe-zns, test-dependencies).
 - Published to crates.io as `zns-orchard` (the upstream `orchard` name is
@@ -37,35 +36,9 @@ All notable changes to this project will be documented in this file.
   New API (all behind `unsafe-zns`):
   - `NoteCommitTrapdoor::from_inner`, `from_bytes`, `to_bytes`, `ConstantTimeEq`,
     `PartialEq`, `Eq`.
-  - `Address::zns_commitment_keys()` — raw `(g_d, pk_d)` bytes for external
-    commitment recomputation.
-  - `Note::zns_cmx(rcm, psi)` / `Note::zns_nullifier(fvk, rcm, psi)` — recompute
-    a decrypted Name Note's `cmx` / nullifier from its ZcashName commitment
-    parameters; the scan-side counterparts of the builder's overrides.
-  - `note_encryption::ZnsIronwoodDomain` — trial-decryption domain that passes
-    the action's `cmx` through unchanged, returning `CandidateNote` so the
-    caller can verify the ZNS commitment binding.
-  - `note_encryption::CandidateNote` — the `Domain::Note` type for
-    `ZnsIronwoodDomain`, carrying the decrypted `Note` alongside the action's
-    `cmx`.
-- Domain parity for `ZnsIronwoodDomain`:
-  - `ZnsIronwoodDomain::for_compact_action` and the
-    `ShieldedOutput<ZnsIronwoodDomain, COMPACT_NOTE_SIZE>` impl for
-    `CompactAction` — compact trial decryption, so light clients see Name
-    Notes exactly as full nodes do.
-  - `BatchDomain` for `ZnsIronwoodDomain` — batched trial decryption reusing
-    the family's GLV batch helpers (one field inversion and one IVK
-    decomposition per batch).
-  - `memuse::DynamicUsage` for `ZnsIronwoodDomain`, and `PartialEq` for
-    `CandidateNote`.
-  - `ZnsIronwoodDomain::try_decrypt_compact` and `try_decrypt_sent`,
-    returning `CandidateNote` so downstream callers receive the decrypted
-    note and published `cmx` together.
 
 ### Changed
 - Single ZNS derivation site: `Note::zns_commitment`.
-- `Address::zns_commitment_keys` documents the `(g_d, pk_d)` order expected by
-  `zns_verify::note_commitment_cmx`.
 
 - `SpendInfo` now carries pre-resolved `psi` and `rcm` as fields, derived from
   `note.psi()` / `note.rcm()` at construction time. The circuit, nullifier, and
@@ -78,12 +51,6 @@ All notable changes to this project will be documented in this file.
   explicit parameters.
 - `NoteCommitment::derive` and `Nullifier::derive` widened from `pub(super)` to
   `pub(crate)` so the builder can construct overridden commitments.
-- `ZnsIronwoodDomain` now contains the standard
-  `NoteEncryptionDomain<IronwoodVersion>` and delegates every shared behavior
-  to it. The V3 note-plaintext lead-byte check is inherited from the Ironwood
-  policy rather than assumed, so trial decryption now rejects non-V3 note
-  plaintexts exactly as `IronwoodDomain` does (previously the lead byte was
-  not checked).
 
 ## [0.16.0] - 2026-09-29
 

@@ -488,53 +488,6 @@ impl Note {
             rcm,
         )
     }
-
-    /// Derives the extracted note commitment (`cmx`) for this note from
-    /// caller-supplied `(rcm, ψ)` instead of the values derived from the
-    /// note's `rseed`.
-    ///
-    /// A ZcashName Name Note publishes in its action the `cmx` derived from
-    /// ZcashName commitment parameters rather than from `rseed`. Trial
-    /// decryption via
-    /// [`ZnsIronwoodDomain`](crate::note_encryption::ZnsIronwoodDomain)
-    /// returns the decrypted note; the caller derives `(rcm, ψ)` from the
-    /// transition σ carried in its memo (whitepaper §3.3) and feeds them to
-    /// this method. The note authenticates exactly when the `cmx` recomputed
-    /// by this method equals the action's `cmx`.
-    ///
-    /// Returns `None` if the commitment is the identity point; scanners
-    /// should reject the note rather than panic.
-    #[cfg(feature = "unsafe-zns")]
-    pub fn zns_cmx(
-        &self,
-        rcm: commitment::NoteCommitTrapdoor,
-        psi: commitment::Psi,
-    ) -> Option<ExtractedNoteCommitment> {
-        let cm = Option::<commitment::NoteCommitment>::from(self.zns_commitment(rcm, psi))?;
-        Some(ExtractedNoteCommitment::from(cm))
-    }
-
-    /// Derives the nullifier for this note from caller-supplied `(rcm, ψ)`
-    /// and the commitment they produce, instead of the values derived from
-    /// the note's `rseed`.
-    ///
-    /// A Name Note's on-chain nullifier is derived from its ZcashName
-    /// commitment parameters, so [`nullifier`](Self::nullifier) does not
-    /// match the nullifier revealed when the note is spent. Wallets must
-    /// store this method's result to detect their own Name Notes being
-    /// spent.
-    ///
-    /// Returns `None` if the commitment is the identity point.
-    #[cfg(feature = "unsafe-zns")]
-    pub fn zns_nullifier(
-        &self,
-        fvk: &FullViewingKey,
-        rcm: commitment::NoteCommitTrapdoor,
-        psi: commitment::Psi,
-    ) -> Option<Nullifier> {
-        let cm = Option::<commitment::NoteCommitment>::from(self.zns_commitment(rcm, psi))?;
-        Some(Nullifier::derive(fvk.nk(), self.rho.0, psi.inner(), cm))
-    }
 }
 
 /// An encrypted note.
