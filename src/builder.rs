@@ -3667,21 +3667,64 @@ mod tests {
         }
     }
 
-    /// A note created from a provided `rseed` is spendable, and its successor can be created
-    /// from another provided `rseed`: both bundles prove, and their proofs and signatures
-    /// verify.
-    #[test]
-    fn provided_rseed_bundle_chain_proves_and_verifies() {
+    proptest! {
+        /// Providing an `rseed` does not change when an output may be added: under any
+        /// bundle version and flags, `add_output_with_rseed` returns what `add_output` does.
+        #[test]
+        fn add_output_with_rseed_is_rejected_exactly_when_add_output_is(
+            sk in crate::keys::testing::arb_spending_key(),
+            rseed in crate::note::testing::arb_rseed_bytes(),
+            bundle_version in crate::bundle::testing::arb_bundle_version(),
+            spends_enabled in any::<bool>(),
+            outputs_enabled in any::<bool>(),
+            cross_address_enabled in any::<bool>(),
+        ) {
+            let recipient = FullViewingKey::from(&sk).address_at(0u32, Scope::External);
+            let value = NoteValue::from_raw(PROVIDED_RSEED_NOTE_ZATOSHIS);
+            let flags = Flags::from_parts(spends_enabled, outputs_enabled, cross_address_enabled);
+            let new_builder = || {
+                Builder::new(
+                    BundleType::DEFAULT,
+                    bundle_version,
+                    flags,
+                    EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+                )
+            };
+            prop_assume!(new_builder().is_ok());
+
+            prop_assert_eq!(
+                new_builder()
+                    .unwrap()
+                    .add_output_with_rseed(None, recipient, value, [0u8; MEMO_SIZE], rseed),
+                new_builder()
+                    .unwrap()
+                    .add_output(None, recipient, value, [0u8; MEMO_SIZE])
+            );
+        }
+    }
+
+    /// Creates a note of `value` from a provided `rseed`, then spends it into a successor of
+    /// the same value created from another provided `rseed`. Checks that both bundles prove
+    /// and that their proofs and signatures verify, that the spend reveals the first note's
+    /// nullifier, and that each note decrypts with its provided `rseed` and `value`.
+    ///
+    /// For a zero-value note the Action circuit does not check the spent note's Merkle path
+    /// against the anchor, so a zero-value chain is bound by the revealed nullifier and the
+    /// spend authorization signature, not by the first note's membership in the tree.
+    fn assert_provided_rseed_chain_proves_and_verifies(value: NoteValue) {
+        /// The sighash both bundles are signed over; the signatures only need to verify
+        /// against it.
+        const SIGHASH: [u8; 32] = [0; 32];
+
         let bundle_version = BundleVersion::ironwood_v3();
         let keys = crate::cached_test_keys(bundle_version.circuit_version());
         let (pk, vk) = (keys.proving_key(), keys.verifying_key());
         let mut rng = UnwrapErr(SysRng);
-        let sighash = [0; 32];
 
         let sk = SpendingKey::random(&mut rng);
         let fvk = FullViewingKey::from(&sk);
+        let ivk = fvk.to_ivk(Scope::External);
         let recipient = fvk.address_at(0u32, Scope::External);
-        let value = NoteValue::from_raw(PROVIDED_RSEED_NOTE_ZATOSHIS);
         let mut provided_rseed = || {
             let mut bytes = [0u8; 32];
             rng.fill_bytes(&mut bytes);
@@ -3692,12 +3735,12 @@ mod tests {
         let assert_verifies = |bundle: &Bundle<Authorized, i64>| {
             assert!(bundle.verify_proof(vk).is_ok());
             for action in bundle.actions() {
-                assert_eq!(action.rk().verify(&sighash, action.authorization()), Ok(()));
+                assert_eq!(action.rk().verify(&SIGHASH, action.authorization()), Ok(()));
             }
             assert_eq!(
                 bundle
                     .binding_validating_key()
-                    .verify(&sighash, bundle.authorization().binding_signature()),
+                    .verify(&SIGHASH, bundle.authorization().binding_signature()),
                 Ok(())
             );
         };
@@ -3717,15 +3760,13 @@ mod tests {
         let first_bundle = unauthorized
             .create_proof(pk, &mut rng)
             .unwrap()
-            .apply_signatures(rng, sighash, &[])
+            .apply_signatures(rng, SIGHASH, &[])
             .unwrap();
         assert_verifies(&first_bundle);
         let (first_note, _, _) = first_bundle
-            .decrypt_output_with_key(
-                meta.output_action_index(0).unwrap(),
-                &fvk.to_ivk(Scope::External),
-            )
+            .decrypt_output_with_key(meta.output_action_index(0).unwrap(), &ivk)
             .unwrap();
+        assert_eq!(first_note.value(), value);
         assert_eq!(first_note.rseed().as_bytes(), first_rseed.as_bytes());
 
         // Spend that note, and create its successor from the second provided `rseed`.
@@ -3748,7 +3789,7 @@ mod tests {
         let second_bundle = unauthorized
             .create_proof(pk, &mut rng)
             .unwrap()
-            .apply_signatures(rng, sighash, &[SpendAuthorizingKey::from(&sk)])
+            .apply_signatures(rng, SIGHASH, &[SpendAuthorizingKey::from(&sk)])
             .unwrap();
         assert_verifies(&second_bundle);
         assert_eq!(
@@ -3756,11 +3797,25 @@ mod tests {
             &first_note.nullifier(&fvk)
         );
         let (second_note, _, _) = second_bundle
-            .decrypt_output_with_key(
-                meta.output_action_index(0).unwrap(),
-                &fvk.to_ivk(Scope::External),
-            )
+            .decrypt_output_with_key(meta.output_action_index(0).unwrap(), &ivk)
             .unwrap();
+        assert_eq!(second_note.value(), value);
         assert_eq!(second_note.rseed().as_bytes(), second_rseed.as_bytes());
+    }
+
+    /// A note created from a provided `rseed` is spendable, and its successor can be created
+    /// from another provided `rseed`: both bundles prove, and their proofs and signatures
+    /// verify.
+    #[test]
+    fn provided_rseed_bundle_chain_proves_and_verifies() {
+        assert_provided_rseed_chain_proves_and_verifies(NoteValue::from_raw(
+            PROVIDED_RSEED_NOTE_ZATOSHIS,
+        ));
+    }
+
+    /// The same chain with zero-value notes, as for bound notes that only record state.
+    #[test]
+    fn provided_rseed_zero_value_chain_proves_and_verifies() {
+        assert_provided_rseed_chain_proves_and_verifies(NoteValue::ZERO);
     }
 }
