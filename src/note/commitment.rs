@@ -30,107 +30,17 @@ fn note_commitment_domain() -> &'static sinsemilla::CommitDomain {
 }
 
 /// The trapdoor for a note commitment.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "unstable-voting-circuits", visibility::make(pub))]
-#[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
 pub(crate) struct NoteCommitTrapdoor(pub(super) pallas::Scalar);
 
 impl NoteCommitTrapdoor {
     /// Returns the inner scalar value.
     #[cfg_attr(feature = "unstable-voting-circuits", visibility::make(pub))]
-    #[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
     pub(crate) fn inner(&self) -> pallas::Scalar {
         self.0
     }
-
-    /// Wraps a caller-supplied scalar as a commitment trapdoor (ZcashName).
-    #[cfg(feature = "unsafe-zns")]
-    pub fn from_inner(inner: pallas::Scalar) -> Self {
-        NoteCommitTrapdoor(inner)
-    }
-
-    /// Deserialize from bytes (ZcashName).
-    #[cfg(feature = "unsafe-zns")]
-    pub fn from_bytes(bytes: &[u8; 32]) -> CtOption<Self> {
-        pallas::Scalar::from_repr(*bytes).map(NoteCommitTrapdoor)
-    }
-
-    /// Serialize to canonical byte representation (ZcashName).
-    #[cfg(feature = "unsafe-zns")]
-    pub fn to_bytes(&self) -> [u8; 32] {
-        self.0.to_repr()
-    }
 }
-
-#[cfg(feature = "unsafe-zns")]
-impl ConstantTimeEq for NoteCommitTrapdoor {
-    fn ct_eq(&self, other: &Self) -> subtle::Choice {
-        self.0.ct_eq(&other.0)
-    }
-}
-
-#[cfg(feature = "unsafe-zns")]
-impl PartialEq for NoteCommitTrapdoor {
-    fn eq(&self, other: &Self) -> bool {
-        self.ct_eq(other).into()
-    }
-}
-
-#[cfg(feature = "unsafe-zns")]
-impl Eq for NoteCommitTrapdoor {}
-
-/// ψ_σ: the ZNS note-commitment input (whitepaper §3.3).
-///
-/// A Name Note's note commitment is derived from the pair `(rcm_σ, ψ_σ)` —
-/// both reduced from the same encoded transition by tagged BLAKE2b — instead
-/// of the values derived from the note's `rseed`. This is the counterpart of
-/// [`NoteCommitTrapdoor`] on the base-field side.
-#[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
-pub(crate) struct Psi(pub(super) pallas::Base);
-
-impl Psi {
-    /// Returns the inner base field element.
-    #[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
-    pub(crate) fn inner(&self) -> pallas::Base {
-        self.0
-    }
-
-    /// Wraps a caller-supplied base field element as ψ (ZcashName).
-    #[cfg_attr(feature = "unsafe-zns", visibility::make(pub))]
-    pub(crate) fn from_inner(inner: pallas::Base) -> Self {
-        Psi(inner)
-    }
-
-    /// Deserialize from bytes (ZcashName).
-    #[cfg(feature = "unsafe-zns")]
-    pub fn from_bytes(bytes: &[u8; 32]) -> CtOption<Self> {
-        pallas::Base::from_repr(*bytes).map(Psi)
-    }
-
-    /// Serialize to canonical byte representation (ZcashName).
-    #[cfg(feature = "unsafe-zns")]
-    pub fn to_bytes(&self) -> [u8; 32] {
-        self.0.to_repr()
-    }
-}
-
-#[cfg(feature = "unsafe-zns")]
-impl ConstantTimeEq for Psi {
-    fn ct_eq(&self, other: &Self) -> subtle::Choice {
-        self.0.ct_eq(&other.0)
-    }
-}
-
-#[cfg(feature = "unsafe-zns")]
-impl PartialEq for Psi {
-    fn eq(&self, other: &Self) -> bool {
-        self.ct_eq(other).into()
-    }
-}
-
-#[cfg(feature = "unsafe-zns")]
-impl Eq for Psi {}
 
 /// A commitment to a note.
 #[derive(Clone, Debug)]
@@ -150,7 +60,7 @@ impl NoteCommitment {
     /// Defined in [Zcash Protocol Spec § 5.4.8.4: Sinsemilla commitments][concretesinsemillacommit].
     ///
     /// [concretesinsemillacommit]: https://zips.z.cash/protocol/nu5.pdf#concretesinsemillacommit
-    pub(crate) fn derive(
+    pub(super) fn derive(
         g_d: [u8; 32],
         pk_d: [u8; 32],
         v: NoteValue,
@@ -211,37 +121,6 @@ impl ExtractedNoteCommitment {
 impl From<&ExtractedNoteCommitment> for [u8; 32] {
     fn from(cmx: &ExtractedNoteCommitment) -> Self {
         cmx.to_bytes()
-    }
-}
-
-/// Strategies for generating ZNS commitment inputs.
-#[cfg(all(feature = "unsafe-zns", any(test, feature = "test-dependencies")))]
-pub mod testing {
-    /// `FromUniformBytes` input width required by the Pasta field implementations.
-    const UNIFORM_BYTES_LEN: usize = 64;
-
-    use group::ff::FromUniformBytes;
-    use pasta_curves::pallas;
-    use proptest::prelude::*;
-
-    use super::{NoteCommitTrapdoor, Psi};
-
-    /// Generates an arbitrary `Psi` from uniformly random bytes.
-    pub fn arb_psi() -> impl Strategy<Value = Psi> {
-        proptest::collection::vec(any::<u8>(), UNIFORM_BYTES_LEN).prop_map(|v| {
-            let mut bytes = [0u8; UNIFORM_BYTES_LEN];
-            bytes.copy_from_slice(&v);
-            Psi::from_inner(pallas::Base::from_uniform_bytes(&bytes))
-        })
-    }
-
-    /// Generates an arbitrary `NoteCommitTrapdoor` from uniformly random bytes.
-    pub fn arb_note_commit_trapdoor() -> impl Strategy<Value = NoteCommitTrapdoor> {
-        proptest::collection::vec(any::<u8>(), UNIFORM_BYTES_LEN).prop_map(|v| {
-            let mut bytes = [0u8; UNIFORM_BYTES_LEN];
-            bytes.copy_from_slice(&v);
-            NoteCommitTrapdoor::from_inner(pallas::Scalar::from_uniform_bytes(&bytes))
-        })
     }
 }
 

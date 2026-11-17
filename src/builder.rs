@@ -27,8 +27,6 @@ use crate::{
     Proof,
 };
 
-use crate::note::commitment::{NoteCommitTrapdoor, Psi};
-
 #[cfg(feature = "circuit")]
 use {
     crate::{
@@ -368,13 +366,6 @@ pub struct SpendInfo {
     pub(crate) scope: Scope,
     pub(crate) note: Note,
     pub(crate) merkle_path: Option<MerklePath>,
-    /// The ψ value for this spend, derived from `rseed` at construction. Once
-    /// stored, this value is never re-derived — the circuit, nullifier, and
-    /// anchor check all read this field directly.
-    pub(crate) psi: Psi,
-    /// The `rcm` (commitment trapdoor) for this spend. Same semantics as
-    /// [`SpendInfo::psi`]: resolved at construction, never re-derived.
-    pub(crate) rcm: NoteCommitTrapdoor,
 }
 
 impl SpendInfo {
@@ -393,8 +384,6 @@ impl SpendInfo {
             dummy_sk: None,
             fvk,
             scope,
-            psi: Psi::from_inner(note.psi()),
-            rcm: note.rcm(),
             note,
             merkle_path: Some(merkle_path),
         })
@@ -415,8 +404,6 @@ impl SpendInfo {
             dummy_sk: None,
             fvk,
             scope,
-            psi: Psi::from_inner(note.psi()),
-            rcm: note.rcm(),
             note,
             merkle_path: None,
         })
@@ -435,8 +422,6 @@ impl SpendInfo {
             // We use external scope to avoid unnecessary derivations, because the dummy
             // note's spending key is random and thus scoping is irrelevant.
             scope: Scope::External,
-            psi: Psi::from_inner(note.psi()),
-            rcm: note.rcm(),
             note,
             merkle_path,
         }
@@ -453,42 +438,11 @@ impl SpendInfo {
                 // coexists with the placeholder anchor of a deferred-anchor builder.
                 None => true,
                 Some(path) => {
-                    let cm = self.commitment();
+                    let cm = self.note.commitment();
                     &path.root(cm.into()) == anchor
                 }
             }
         }
-    }
-
-    /// Returns the ψ for this spend, derived from `rseed` at construction.
-    /// This is a field read — no derivation.
-    pub(crate) fn psi(&self) -> Psi {
-        self.psi
-    }
-
-    /// Returns the resolved `rcm` (commitment trapdoor) for this spend.
-    /// Same semantics as [`SpendInfo::psi`]: resolved at construction.
-    pub(crate) fn rcm(&self) -> NoteCommitTrapdoor {
-        self.rcm
-    }
-
-    /// Returns the note commitment for this spend, derived from the resolved
-    /// ψ and rcm; it equals `self.note.commitment()`.
-    pub(crate) fn commitment(&self) -> crate::note::NoteCommitment {
-        self.note
-            .zns_commitment(self.rcm, self.psi)
-            .expect("the resolved opening yields a non-identity commitment")
-    }
-
-    /// Returns the nullifier for this spend, derived from the resolved ψ
-    /// and commitment; it equals `self.note.nullifier(&self.fvk)`.
-    pub(crate) fn nullifier(&self) -> Nullifier {
-        Nullifier::derive(
-            self.fvk.nk(),
-            self.note.rho().into_inner(),
-            self.psi.inner(),
-            self.commitment(),
-        )
     }
 
     /// Builds the spend half of an action.
@@ -505,7 +459,7 @@ impl SpendInfo {
         pallas::Scalar,
         redpallas::VerificationKey<SpendAuth>,
     ) {
-        let nf_old = self.nullifier();
+        let nf_old = self.note.nullifier(&self.fvk);
         let ak: SpendValidatingKey = self.fvk.clone().into();
         let alpha = pallas::Scalar::random(&mut rng);
         let rk = ak.randomize(&alpha);
@@ -513,10 +467,10 @@ impl SpendInfo {
         (nf_old, ak, alpha, rk)
     }
 
-    fn into_pczt(self, rng: impl Rng) -> Result<crate::pczt::Spend, BuildError> {
+    fn into_pczt(self, rng: impl Rng) -> crate::pczt::Spend {
         let (nf_old, _, alpha, rk) = self.build(rng);
 
-        Ok(crate::pczt::Spend {
+        crate::pczt::Spend {
             nullifier: nf_old,
             rk,
             spend_auth_sig: None,
@@ -531,7 +485,7 @@ impl SpendInfo {
             zip32_derivation: None,
             dummy_sk: self.dummy_sk,
             proprietary: BTreeMap::new(),
-        })
+        }
     }
 }
 
@@ -652,16 +606,7 @@ impl OutputInfo {
         cv_net: &ValueCommitment,
         nf_old: Nullifier,
         mut rng: impl Rng,
-    ) -> Result<
-        (
-            Note,
-            Psi,
-            NoteCommitTrapdoor,
-            ExtractedNoteCommitment,
-            TransmittedNoteCiphertext,
-        ),
-        BuildError,
-    > {
+    ) -> Result<(Note, ExtractedNoteCommitment, TransmittedNoteCiphertext), BuildError> {
         let rho = Rho::from_nf_old(nf_old);
         // A provided `rseed` is only valid relative to this action's `rho`, and cannot be
         // resampled, so the two conditions that `Note::new` retries past are errors here.
@@ -681,9 +626,8 @@ impl OutputInfo {
                     .ok_or(BuildError::InvalidOutputNote)?
             }
         };
-
-        let (psi, rcm) = (Psi::from_inner(note.psi()), note.rcm());
-        let cmx = note.commitment().into();
+        let cm_new = note.commitment();
+        let cmx = cm_new.into();
 
         // The Orchard and Ironwood encryptor aliases share encryption behavior;
         // `Note::version()` selects the note plaintext lead byte.
@@ -710,7 +654,7 @@ impl OutputInfo {
             out_ciphertext: encryptor.encrypt_outgoing_plaintext(cv_net, &cmx, &mut rng),
         };
 
-        Ok((note, psi, rcm, cmx, encrypted_note))
+        Ok((note, cmx, encrypted_note))
     }
 
     fn into_pczt(
@@ -719,7 +663,7 @@ impl OutputInfo {
         nf_old: Nullifier,
         rng: impl Rng,
     ) -> Result<crate::pczt::Output, BuildError> {
-        let (note, _psi, _rcm, cmx, encrypted_note) = self.build(cv_net, nf_old, rng)?;
+        let (note, cmx, encrypted_note) = self.build(cv_net, nf_old, rng)?;
 
         Ok(crate::pczt::Output {
             cmx,
@@ -826,8 +770,7 @@ impl ActionInfo {
         let cv_net = ValueCommitment::derive(v_net, self.rcv.clone());
 
         let (nf_old, ak, alpha, rk) = self.spend.build(&mut rng);
-        let (note, psi_new, rcm_new, cmx, encrypted_note) =
-            self.output.build(&cv_net, nf_old, &mut rng)?;
+        let (note, cmx, encrypted_note) = self.output.build(&cv_net, nf_old, &mut rng)?;
 
         Ok((
             Action::from_parts(
@@ -848,8 +791,6 @@ impl ActionInfo {
             Circuit::from_action_context_unchecked(
                 self.spend,
                 note,
-                psi_new,
-                rcm_new,
                 alpha,
                 self.rcv,
                 circuit_version,
@@ -861,7 +802,7 @@ impl ActionInfo {
         let v_net = self.value_sum();
         let cv_net = ValueCommitment::derive(v_net, self.rcv.clone());
 
-        let spend = self.spend.into_pczt(&mut rng)?;
+        let spend = self.spend.into_pczt(&mut rng);
         let output = self.output.into_pczt(&cv_net, spend.nullifier, &mut rng)?;
 
         Ok(crate::pczt::Action {
@@ -1379,7 +1320,7 @@ impl Builder {
                 let actions = pre_actions
                     .into_iter()
                     .map(|a| a.build_for_pczt(&mut rng))
-                    .collect::<Result<Vec<_>, BuildError>>()?;
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 Ok((
                     crate::pczt::Bundle {
@@ -1471,11 +1412,12 @@ fn finish_unauthorized_bundle<V: TryFrom<i64>, R: Rng>(
         .into_bsk();
 
     // Create the actions.
-    let built_actions: Vec<_> = pre_actions
+    let (actions, circuits): (Vec<_>, Vec<_>) = pre_actions
         .into_iter()
         .map(|a| a.build(&mut rng, circuit_version))
-        .collect::<Result<_, _>>()?;
-    let (actions, circuits): (Vec<_>, Vec<_>) = built_actions.into_iter().unzip();
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .unzip();
 
     // Verify that bsk and bvk are consistent.
     let bvk = (actions.iter().map(|a| a.cv_net()).sum::<ValueCommitment>()
@@ -1612,8 +1554,6 @@ fn build_bundle<B, R: Rng>(
                 dummy_sk: None,
                 fvk,
                 scope,
-                psi: Psi::from_inner(note.psi()),
-                rcm: note.rcm(),
                 note,
                 merkle_path: Some(MerklePath::dummy(&mut rng)),
             };
@@ -3727,21 +3667,64 @@ mod tests {
         }
     }
 
-    /// A note created from a provided `rseed` is spendable, and its successor can be created
-    /// from another provided `rseed`: both bundles prove, and their proofs and signatures
-    /// verify.
-    #[test]
-    fn provided_rseed_bundle_chain_proves_and_verifies() {
+    proptest! {
+        /// Providing an `rseed` does not change when an output may be added: under any
+        /// bundle version and flags, `add_output_with_rseed` returns what `add_output` does.
+        #[test]
+        fn add_output_with_rseed_is_rejected_exactly_when_add_output_is(
+            sk in crate::keys::testing::arb_spending_key(),
+            rseed in crate::note::testing::arb_rseed_bytes(),
+            bundle_version in crate::bundle::testing::arb_bundle_version(),
+            spends_enabled in any::<bool>(),
+            outputs_enabled in any::<bool>(),
+            cross_address_enabled in any::<bool>(),
+        ) {
+            let recipient = FullViewingKey::from(&sk).address_at(0u32, Scope::External);
+            let value = NoteValue::from_raw(PROVIDED_RSEED_NOTE_ZATOSHIS);
+            let flags = Flags::from_parts(spends_enabled, outputs_enabled, cross_address_enabled);
+            let new_builder = || {
+                Builder::new(
+                    BundleType::DEFAULT,
+                    bundle_version,
+                    flags,
+                    EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+                )
+            };
+            prop_assume!(new_builder().is_ok());
+
+            prop_assert_eq!(
+                new_builder()
+                    .unwrap()
+                    .add_output_with_rseed(None, recipient, value, [0u8; MEMO_SIZE], rseed),
+                new_builder()
+                    .unwrap()
+                    .add_output(None, recipient, value, [0u8; MEMO_SIZE])
+            );
+        }
+    }
+
+    /// Creates a note of `value` from a provided `rseed`, then spends it into a successor of
+    /// the same value created from another provided `rseed`. Checks that both bundles prove
+    /// and that their proofs and signatures verify, that the spend reveals the first note's
+    /// nullifier, and that each note decrypts with its provided `rseed` and `value`.
+    ///
+    /// For a zero-value note the Action circuit does not check the spent note's Merkle path
+    /// against the anchor, so a zero-value chain is bound by the revealed nullifier and the
+    /// spend authorization signature, not by the first note's membership in the tree.
+    fn assert_provided_rseed_chain_proves_and_verifies(value: NoteValue) {
+        /// The sighash both bundles are signed over; the signatures only need to verify
+        /// against it.
+        const SIGHASH: [u8; 32] = [0; 32];
+
         let bundle_version = BundleVersion::ironwood_v3();
         let keys = crate::cached_test_keys(bundle_version.circuit_version());
         let (pk, vk) = (keys.proving_key(), keys.verifying_key());
         let mut rng = UnwrapErr(SysRng);
-        let sighash = [0; 32];
 
         let sk = SpendingKey::random(&mut rng);
         let fvk = FullViewingKey::from(&sk);
+        let ivk = fvk.to_ivk(Scope::External);
         let recipient = fvk.address_at(0u32, Scope::External);
-        let value = NoteValue::from_raw(PROVIDED_RSEED_NOTE_ZATOSHIS);
         let mut provided_rseed = || {
             let mut bytes = [0u8; 32];
             rng.fill_bytes(&mut bytes);
@@ -3752,12 +3735,12 @@ mod tests {
         let assert_verifies = |bundle: &Bundle<Authorized, i64>| {
             assert!(bundle.verify_proof(vk).is_ok());
             for action in bundle.actions() {
-                assert_eq!(action.rk().verify(&sighash, action.authorization()), Ok(()));
+                assert_eq!(action.rk().verify(&SIGHASH, action.authorization()), Ok(()));
             }
             assert_eq!(
                 bundle
                     .binding_validating_key()
-                    .verify(&sighash, bundle.authorization().binding_signature()),
+                    .verify(&SIGHASH, bundle.authorization().binding_signature()),
                 Ok(())
             );
         };
@@ -3777,15 +3760,13 @@ mod tests {
         let first_bundle = unauthorized
             .create_proof(pk, &mut rng)
             .unwrap()
-            .apply_signatures(rng, sighash, &[])
+            .apply_signatures(rng, SIGHASH, &[])
             .unwrap();
         assert_verifies(&first_bundle);
         let (first_note, _, _) = first_bundle
-            .decrypt_output_with_key(
-                meta.output_action_index(0).unwrap(),
-                &fvk.to_ivk(Scope::External),
-            )
+            .decrypt_output_with_key(meta.output_action_index(0).unwrap(), &ivk)
             .unwrap();
+        assert_eq!(first_note.value(), value);
         assert_eq!(first_note.rseed().as_bytes(), first_rseed.as_bytes());
 
         // Spend that note, and create its successor from the second provided `rseed`.
@@ -3808,7 +3789,7 @@ mod tests {
         let second_bundle = unauthorized
             .create_proof(pk, &mut rng)
             .unwrap()
-            .apply_signatures(rng, sighash, &[SpendAuthorizingKey::from(&sk)])
+            .apply_signatures(rng, SIGHASH, &[SpendAuthorizingKey::from(&sk)])
             .unwrap();
         assert_verifies(&second_bundle);
         assert_eq!(
@@ -3816,11 +3797,25 @@ mod tests {
             &first_note.nullifier(&fvk)
         );
         let (second_note, _, _) = second_bundle
-            .decrypt_output_with_key(
-                meta.output_action_index(0).unwrap(),
-                &fvk.to_ivk(Scope::External),
-            )
+            .decrypt_output_with_key(meta.output_action_index(0).unwrap(), &ivk)
             .unwrap();
+        assert_eq!(second_note.value(), value);
         assert_eq!(second_note.rseed().as_bytes(), second_rseed.as_bytes());
+    }
+
+    /// A note created from a provided `rseed` is spendable, and its successor can be created
+    /// from another provided `rseed`: both bundles prove, and their proofs and signatures
+    /// verify.
+    #[test]
+    fn provided_rseed_bundle_chain_proves_and_verifies() {
+        assert_provided_rseed_chain_proves_and_verifies(NoteValue::from_raw(
+            PROVIDED_RSEED_NOTE_ZATOSHIS,
+        ));
+    }
+
+    /// The same chain with zero-value notes, as for bound notes that only record state.
+    #[test]
+    fn provided_rseed_zero_value_chain_proves_and_verifies() {
+        assert_provided_rseed_chain_proves_and_verifies(NoteValue::ZERO);
     }
 }

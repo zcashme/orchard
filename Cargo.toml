@@ -12,7 +12,7 @@ authors = [
 ]
 edition = "2021"
 rust-version = "1.88"
-description = "The Orchard shielded transaction protocol, with ZNS extensions for Ironwood Name Notes (fork of zcash/orchard 0.15.5)"
+description = "The Orchard shielded transaction protocol, with outputs built from a caller-provided rseed for ZNS Name Notes (fork of zcash/orchard 0.16.0)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zcashme/orchard"
 documentation = "https://docs.rs/zns-orchard"

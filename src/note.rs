@@ -24,10 +24,8 @@ const ZIP2005_ORCHARD_QR_RCM_DOMAIN_SEPARATOR: u8 = 0x0B;
 pub(crate) mod commitment;
 #[cfg(feature = "unstable-voting-circuits")]
 pub mod commitment;
-#[cfg(any(feature = "unstable-voting-circuits", feature = "unsafe-zns"))]
+#[cfg(feature = "unstable-voting-circuits")]
 pub use self::commitment::NoteCommitTrapdoor;
-#[cfg(feature = "unsafe-zns")]
-pub use self::commitment::Psi;
 pub use self::commitment::{ExtractedNoteCommitment, NoteCommitment};
 
 /// Note plaintext version.
@@ -463,78 +461,6 @@ impl Note {
     pub fn nullifier(&self, fvk: &FullViewingKey) -> Nullifier {
         Nullifier::derive(fvk.nk(), self.rho.0, self.psi(), self.commitment())
     }
-
-    /// Derives this note's commitment from the supplied `(rcm, ψ)` opening
-    /// instead of the note's `rseed`-derived values — the single derivation
-    /// site shared by the ZNS builder and scan paths.
-    ///
-    /// The returned `CtOption` is absent if the commitment is the identity point.
-    pub(crate) fn zns_commitment(
-        &self,
-        rcm: commitment::NoteCommitTrapdoor,
-        psi: commitment::Psi,
-    ) -> CtOption<commitment::NoteCommitment> {
-        let g_d = self.recipient.g_d();
-        let g_d_bytes = g_d.to_bytes();
-        let pk_d = self.recipient.pk_d().inner();
-        let pk_d_bytes = pk_d.to_bytes();
-
-        commitment::NoteCommitment::derive(
-            g_d_bytes,
-            pk_d_bytes,
-            self.value,
-            self.rho.0,
-            psi.inner(),
-            rcm,
-        )
-    }
-
-    /// Derives the extracted note commitment (`cmx`) for this note from
-    /// caller-supplied `(rcm, ψ)` instead of the values derived from the
-    /// note's `rseed`.
-    ///
-    /// A ZcashName Name Note publishes in its action the `cmx` derived from
-    /// ZcashName commitment parameters rather than from `rseed`. Trial
-    /// decryption via
-    /// [`ZnsIronwoodDomain`](crate::note_encryption::ZnsIronwoodDomain)
-    /// returns the decrypted note; the caller derives `(rcm, ψ)` from the
-    /// transition σ carried in its memo (whitepaper §3.3) and feeds them to
-    /// this method. The note authenticates exactly when the `cmx` recomputed
-    /// by this method equals the action's `cmx`.
-    ///
-    /// Returns `None` if the commitment is the identity point; scanners
-    /// should reject the note rather than panic.
-    #[cfg(feature = "unsafe-zns")]
-    pub fn zns_cmx(
-        &self,
-        rcm: commitment::NoteCommitTrapdoor,
-        psi: commitment::Psi,
-    ) -> Option<ExtractedNoteCommitment> {
-        let cm = Option::<commitment::NoteCommitment>::from(self.zns_commitment(rcm, psi))?;
-        Some(ExtractedNoteCommitment::from(cm))
-    }
-
-    /// Derives the nullifier for this note from caller-supplied `(rcm, ψ)`
-    /// and the commitment they produce, instead of the values derived from
-    /// the note's `rseed`.
-    ///
-    /// A Name Note's on-chain nullifier is derived from its ZcashName
-    /// commitment parameters, so [`nullifier`](Self::nullifier) does not
-    /// match the nullifier revealed when the note is spent. Wallets must
-    /// store this method's result to detect their own Name Notes being
-    /// spent.
-    ///
-    /// Returns `None` if the commitment is the identity point.
-    #[cfg(feature = "unsafe-zns")]
-    pub fn zns_nullifier(
-        &self,
-        fvk: &FullViewingKey,
-        rcm: commitment::NoteCommitTrapdoor,
-        psi: commitment::Psi,
-    ) -> Option<Nullifier> {
-        let cm = Option::<commitment::NoteCommitment>::from(self.zns_commitment(rcm, psi))?;
-        Some(Nullifier::derive(fvk.nk(), self.rho.0, psi.inner(), cm))
-    }
 }
 
 /// An encrypted note.
@@ -568,9 +494,6 @@ pub mod testing {
     use crate::{
         address::testing::arb_address, note::nullifier::testing::arb_nullifier, value::NoteValue,
     };
-
-    #[cfg(feature = "unsafe-zns")]
-    pub use super::commitment::testing::{arb_note_commit_trapdoor, arb_psi};
 
     use super::{Note, NoteVersion, RandomSeed, RandomSeedBytes, Rho};
 
